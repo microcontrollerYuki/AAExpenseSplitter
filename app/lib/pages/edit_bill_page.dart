@@ -63,7 +63,51 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     return i < 0 ? _amount : _amount.substring(i + 1);
   }
 
+  /// 表达式求值触发键「=」：结果替换表达式显示；非法输入提示「非法参数」
+  bool get _hasOperator => _amount.contains('+') || _amount.contains('-');
+
+  /// 表达式合法性：数字(＋/−数字)*，每段数字格式合法（拒绝空段/多余小数点等）
+  bool _validExpr(String t) {
+    if (t.isEmpty) return false;
+    for (final seg in t.split(RegExp(r'[+-]'))) {
+      if (!RegExp(r'^\d+(\.\d{1,2})?$').hasMatch(seg)) return false;
+    }
+    return true;
+  }
+
+  /// 去掉末尾多余小数点（用户输入「45.」不视为非法）
+  String _normalizeExpr(String t) =>
+      t.endsWith('.') ? t.substring(0, t.length - 1) : t;
+
+  /// 当前输入的求值金额（分）：表达式合法时取求值结果，否则 0
+  int _evaluatedCents() {
+    final t = _normalizeExpr(_amount.trim());
+    if (!_validExpr(t)) return 0;
+    final v = _evalExpr();
+    return v == null ? 0 : parseMoneyToCents(v.toStringAsFixed(2));
+  }
+
+  /// 按「=」：表达式求值并把结果显示为纯数字；未按 = 直接保存会报「非法参数」
+  void _evaluate() {
+    final t = _normalizeExpr(_amount.trim());
+    if (t.isEmpty) return;
+    if (!_validExpr(t) || !_hasOperator) {
+      _snack('非法参数');
+      return;
+    }
+    final v = _evalExpr();
+    if (v == null || v < 0) {
+      _snack('非法参数');
+      return;
+    }
+    setState(() => _amount = centsToPlain(parseMoneyToCents(v.toStringAsFixed(2))));
+  }
+
   void _onKey(String k) {
+    if (k == '=') {
+      _evaluate();
+      return;
+    }
     setState(() {
       if (k == '+' || k == '-') {
         if (_amount.isEmpty) return;
@@ -120,12 +164,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     return sum + sign * last;
   }
 
-  String get _displayAmount {
-    final hasOp = _amount.contains('+') || _amount.contains('-');
-    final eval = _evalExpr();
-    if (hasOp && eval != null) return eval.toStringAsFixed(2);
-    return _amount.isEmpty ? '0.00' : _amount;
-  }
+  /// 显示所键入的内容（表达式原样显示，按「=」后才变成求值结果）
+  String get _displayAmount => _amount.isEmpty ? '0.00' : _amount;
 
   // ---------- 日期 ----------
 
@@ -171,9 +211,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final categories =
         ref.read(categoriesProvider).value ?? const <Category>[];
 
-    final evalV = _evalExpr();
-    final cents = parseMoneyToCents(
-        evalV == null ? '' : evalV.toStringAsFixed(2));
+    // 表达式必须按「=」求值后才是纯数字；带运算符或格式非法一律「非法参数」
+    final raw = _normalizeExpr(_amount.trim());
+    if (raw.isEmpty) return _snack('请输入金额');
+    if (_hasOperator || !_validExpr(raw)) return _snack('非法参数');
+    final cents = parseMoneyToCents(raw);
     final accId = _accountId ?? (accounts.isNotEmpty ? accounts.first.id : '');
     final toId = _toAccountId ?? (accounts.length > 1 ? accounts[1].id : '');
 
@@ -708,7 +750,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     for (final a in accounts) {
       if (a.id == effToId) selToAcc = a;
     }
-    final centsNow = parseMoneyToCents(_displayAmount);
+    final centsNow = _evaluatedCents();
 
     final amountColor = _type == 0
         ? kExpenseColor

@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
-/// 记账页数字键盘（钱迹风格）：支持 +− 连算，长按 ⌫ 清空
-/// 1 2 3 ⌫ / 4 5 6 − / 7 8 9 + / 再记 0 . 保存
+/// 记账页数字键盘（钱迹风格）：支持 +− 连算表达式，「=」求值，长按 ⌫ 清空
+/// 1 2 3 ⌫ / 4 5 6 − / 7 8 9 + / . 0 = 保存 / 再记（整行）
 class NumberPad extends StatelessWidget {
   const NumberPad({
     super.key,
@@ -58,7 +58,8 @@ class NumberPad extends StatelessWidget {
               onLongPress: label == '⌫' ? onClear : null,
               borderRadius: BorderRadius.circular(10),
               child: SizedBox(
-                height: 52,
+                // 5 行布局需压紧键高，保证不超出屏幕
+                height: 40,
                 child: Center(
                   child: Text(
                     label,
@@ -84,7 +85,9 @@ class NumberPad extends StatelessWidget {
         Row(children: ['1', '2', '3', '⌫'].map(cell).toList()),
         Row(children: ['4', '5', '6', '−'].map(cell).toList()),
         Row(children: ['7', '8', '9', '+'].map(cell).toList()),
-        Row(children: ['再记', '0', '.', '保存'].map(cell).toList()),
+        Row(children: ['.', '0', '=', '保存'].map(cell).toList()),
+        // 「再记」整行：保存后留在本页继续记（编辑已有账单时置灰）
+        Row(children: [cell('再记')]),
       ],
     );
   }
