@@ -257,6 +257,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       toAccountId: _type == 2 ? toId : null,
       dateMs: _date.millisecondsSinceEpoch,
       note: _noteCtl.text.trim(),
+      // 编辑既有账单必须带上原 aaGroupId：否则 isAa/aaGroupId 会被抹掉，
+      // AA 账单「失去平分属性」，再次勾选保存还会重复生成分摊组与挂账应收
+      aaGroupId: widget.bill?.aaGroupId,
       createdAt: widget.bill?.createdAt,
     );
 
