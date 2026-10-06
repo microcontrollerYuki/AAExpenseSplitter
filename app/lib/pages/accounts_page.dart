@@ -9,6 +9,7 @@ import '../providers.dart';
 import '../theme.dart';
 import '../utils/balance.dart';
 import '../utils/money.dart';
+import 'account_info_page.dart';
 
 /// 账本页：总资产 + 账户列表（增改删）
 class AccountsPage extends ConsumerWidget {
@@ -31,8 +32,9 @@ class AccountsPage extends ConsumerWidget {
           IconButton(
             icon: const Icon(Icons.add),
             tooltip: '添加账户',
-            onPressed: () =>
-                _openEdit(context, ref.read(databaseProvider), null, accounts.length),
+            onPressed: () => showAccountEditor(
+                context, ref.read(databaseProvider),
+                account: null, newSort: accounts.length),
           ),
         ],
       ),
@@ -88,8 +90,11 @@ class AccountsPage extends ConsumerWidget {
                             : Colors.black87,
                       ),
                     ),
-                    onTap: () => _openEdit(
-                        context, ref.read(databaseProvider), a, accounts.length),
+                    // 点击进入账户信息页（余额 + 动账明细），「修改」才打开编辑弹窗
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                          builder: (_) => AccountInfoPage(account: a)),
+                    ),
                   ),
               ],
             ),
@@ -97,22 +102,28 @@ class AccountsPage extends ConsumerWidget {
           const SizedBox(height: 8),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Text('点击账户可编辑；仍有账单关联的账户无法删除',
+            child: Text('点击账户查看余额与动账明细；仍有账单关联的账户无法删除',
                 style: TextStyle(fontSize: 12, color: Colors.grey)),
           ),
         ],
       ),
     );
   }
+}
 
-  void _openEdit(
-      BuildContext context, AppDatabase db, Account? acc, int accountCount) {
-    showDialog(
-      context: context,
-      builder: (_) => _AccountDialog(
-          db: db, account: acc, newSort: accountCount),
-    );
-  }
+/// 打开账户编辑弹窗（新建 account 传 null）：账本「+」与账户信息页「修改」共用。
+/// 返回 true 表示执行了删除
+Future<bool?> showAccountEditor(
+  BuildContext context,
+  AppDatabase db, {
+  Account? account,
+  required int newSort,
+}) {
+  return showDialog<bool>(
+    context: context,
+    builder: (_) =>
+        _AccountDialog(db: db, account: account, newSort: newSort),
+  );
 }
 
 class _AccountDialog extends StatefulWidget {
@@ -212,7 +223,8 @@ class _AccountDialogState extends State<_AccountDialog> {
       return;
     }
     await widget.db.deleteAccount(a.id);
-    if (mounted) Navigator.of(context).pop();
+    // pop(true) 通知调用方（账户信息页）已删除，用于返回列表
+    if (mounted) Navigator.of(context).pop(true);
   }
 
   @override

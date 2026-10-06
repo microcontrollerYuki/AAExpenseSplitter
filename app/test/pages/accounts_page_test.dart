@@ -147,6 +147,9 @@ void main() {
     // 「现金」同时是账户名与类型副标题，取首个（title）
     await tester.tap(find.text('现金').first);
     await tester.pumpAndSettle();
+    // 新交互：先进账户信息页，按下「修改」才打开编辑弹窗
+    await tester.tap(find.text('修改'));
+    await tester.pumpAndSettle();
     expect(find.text('编辑账户'), findsOneWidget);
 
     // 初始值为现金 💵；🪙 不在账户列表 emoji 中，避免定位歧义
@@ -182,6 +185,8 @@ void main() {
 
     await tester.tap(find.text('微信'));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('修改'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('删除'));
     await tester.pump();
     expect(find.textContaining('已有 1 笔账单，无法删除'), findsOneWidget);
@@ -197,6 +202,8 @@ void main() {
     final db = await pumpPage(tester, const AccountsPage());
 
     await tester.tap(find.text('支付宝'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('修改'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('删除'));
     await tester.pumpAndSettle();
