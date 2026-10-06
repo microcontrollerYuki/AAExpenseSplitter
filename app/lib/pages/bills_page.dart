@@ -7,7 +7,7 @@ import '../theme.dart';
 import '../utils/money.dart';
 import '../widgets/month_bar.dart';
 import 'accounts_page.dart';
-import 'edit_bill_page.dart';
+import 'bill_detail_page.dart';
 
 /// 明细页（首页）：月份切换 + 月结余摘要 + 按日分组的账单流
 class BillsPage extends ConsumerWidget {
@@ -280,8 +280,9 @@ class _BillTileState extends ConsumerState<_BillTile> {
           setState(() => _dx = 0);
           return;
         }
+        // 进入只读详情，按下「修改」才可编辑（2026-10-06 需求）
         Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => EditBillPage(bill: bill)),
+          MaterialPageRoute(builder: (_) => BillDetailPage(bill: bill)),
         );
       },
     );
