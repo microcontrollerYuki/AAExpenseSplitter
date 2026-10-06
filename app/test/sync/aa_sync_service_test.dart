@@ -176,7 +176,7 @@ void main() {
 
     test('settle：净额为 0 直接返回不产生数据', () async {
       await pair();
-      await svc.settle(realAccountId: 'acc_cash');
+      await svc.settle(accountId: 'acc_cash');
       expect(await db.getAllSettlements(), isEmpty);
     });
 
@@ -191,10 +191,10 @@ void main() {
         createdAtMs: 1,
         updatedAtMs: 1,
       ));
-      expect(() => svc.settle(realAccountId: 'acc_cash'), throwsException);
+      expect(() => svc.settle(accountId: 'acc_cash'), throwsException);
     });
 
-    test('settle：我收款的结算生成 挂账→真实 转账并核销分组', () async {
+    test('settle：我收款时逐条生成收入账单（入到选定账户）并核销分组', () async {
       await pair();
       final myUid = (await db.getMeta('myUid'))!;
       await db.setMeta('partnerUid', 'partner-uid');
@@ -204,11 +204,14 @@ void main() {
         payerUid: myUid,
         totalAmount: 1000,
         dateMs: 10,
+        note: const Value('晚饭'),
+        categoryName: const Value('餐饮'),
+        categoryEmoji: const Value('🍜'),
         createdAtMs: 1,
         updatedAtMs: 1,
       ));
 
-      await svc.settle(realAccountId: 'acc_bank', note: '微信已转');
+      await svc.settle(accountId: 'acc_bank', note: '微信已转');
 
       final settles = await db.getAllSettlements();
       expect(settles.length, 1);
@@ -217,16 +220,18 @@ void main() {
       expect(settles.first.note, '微信已转');
       // 分组被核销
       expect((await db.getAaGroup('g1'))!.settled, isTrue);
-      // 核销转账：AA挂账 → 真实账户
+      // 逐条生成收入（我垫付这条 → 我收钱），不再生成转账
       final bills = await db.watchAllBills().first;
-      final transfer = bills.firstWhere((b) => b.settlementId != null);
-      expect(transfer.type, 2);
-      expect(transfer.accountId, kAaCreditAccountId);
-      expect(transfer.toAccountId, 'acc_bank');
-      expect(transfer.note, '微信已转');
+      final income = bills.firstWhere((b) => b.settlementId != null);
+      expect(income.type, 1);
+      expect(income.amount, 500);
+      expect(income.accountId, 'acc_bank');
+      expect(income.toAccountId, isNull);
+      expect(income.categoryId, 'inc_other');
+      expect(income.note, 'AA平分：餐饮 · 晚饭');
     });
 
-    test('settle：我付款时生成 真实→挂账，备注默认', () async {
+    test('settle：我付款时逐条生成支出账单（从选定账户付款）', () async {
       await pair();
       final myUid = (await db.getMeta('myUid'))!;
       await db.setMeta('partnerUid', 'partner-uid');
@@ -240,15 +245,18 @@ void main() {
         updatedAtMs: 1,
       ));
 
-      await svc.settle(realAccountId: 'acc_cash');
+      await svc.settle(accountId: 'acc_cash');
 
       final settles = await db.getAllSettlements();
       expect(settles.first.receiverUid, 'partner-uid');
+      // 逐条生成支出（我应付这条 → 我付钱），不再生成转账
       final bills = await db.watchAllBills().first;
-      final transfer = bills.firstWhere((b) => b.settlementId != null);
-      expect(transfer.accountId, 'acc_cash');
-      expect(transfer.toAccountId, kAaCreditAccountId);
-      expect(transfer.note, 'AA结算 · 转出');
+      final expense = bills.firstWhere((b) => b.settlementId != null);
+      expect(expense.type, 0);
+      expect(expense.amount, 500);
+      expect(expense.accountId, 'acc_cash');
+      expect(expense.toAccountId, isNull);
+      expect(expense.note, 'AA平分：'); // 无分类名/备注时的兜底文案
     });
   });
 
@@ -389,24 +397,10 @@ void main() {
       final pending = await svc.pendingShareGroups();
       expect(pending, hasLength(1));
 
-      // 接收方入账：份额 = 总额向下取整（多出的 1 分归垫付方 A）
-      await svc.adoptShareBill(
-        group: pending.single,
-        accountId: kAaCreditAccountId,
-        categoryId: 'cat_food',
-        note: 'AA · 火锅',
-      );
-      final bills = await db.watchAllBills().first;
-      expect(bills.length, 1);
-      final share = bills.first;
-      expect(share.type, 0);
-      expect(share.amount, 5000);
-      expect(share.accountId, kAaCreditAccountId);
-      expect(share.categoryId, 'cat_food'); // 按名称匹配到餐饮
-      expect(share.note, 'AA · 火锅');
-      expect(share.aaGroupId, isNotNull);
-      // 入账即确认
+      // 接收方入账：只确认、不建明细账单（图 2）——份额账单在结算时逐条生成
+      await svc.confirmShare(group: pending.single);
       expect((await db.getAaGroup(pending.single.id))!.status, 1);
+      expect(await db.watchAllBills().first, isEmpty);
 
       // B 视角净额：伙伴垫付 → 应付 -50.00
       expect(await svc.computeNet(), -5000);
@@ -414,12 +408,12 @@ void main() {
       // 幂等：重导同一文件不新增
       final msg2 = await svc.importSyncFile(exported);
       expect(msg2, contains('新增 0 笔'));
-      expect((await db.watchAllBills().first).length, 1);
+      expect(await db.watchAllBills().first, isEmpty);
 
       await dbA.close();
     });
 
-    test('导入含结算的文件：生成结算落账转账且幂等', () async {
+    test('导入含结算的文件：逐条生成收支账单且幂等', () async {
       await pair();
       final myUid = await db.getMeta('myUid');
       final payload = {
@@ -469,8 +463,12 @@ void main() {
       var bills = await db.watchAllBills().first;
       final settleBills =
           bills.where((b) => b.settlementId == 'settle-1').toList();
+      // 逐条落账（图 2）：pg1 伙伴垫付 → 我应付 → 一笔支出，账户=结算落账账户
       expect(settleBills.length, 1);
-      expect(settleBills.first.accountId, kAaCreditAccountId);
+      expect(settleBills.first.type, 0);
+      expect(settleBills.first.amount, 1234);
+      expect(settleBills.first.accountId, 'acc_cash');
+      expect(settleBills.first.toAccountId, isNull);
       // cutoff 核销了伙伴的组
       expect((await db.getAaGroup('pg1'))!.settled, isTrue);
 
@@ -764,10 +762,15 @@ void main() {
             await encryptToAasContent(payload, 'share-secret-1'));
       await svc.importSyncFile(f.path);
       final g = (await db.getAllAaGroups()).single;
-      await svc.adoptShareBill(
-        group: g,
+      // 旧模型遗留的份额账单（挂 aaGroupId）：用于验证墓碑作废逻辑
+      await db.upsertBill(
+        id: 'bill-share',
+        type: 0,
+        amount: 1000,
         accountId: kAaCreditAccountId,
+        dateMs: 10,
         note: 'AA · 伙伴垫付',
+        aaGroupId: g.id,
       );
       expect(await db.watchAllBills().first, hasLength(1));
 

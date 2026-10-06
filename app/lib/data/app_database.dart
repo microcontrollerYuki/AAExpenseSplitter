@@ -416,6 +416,11 @@ class AppDatabase extends _$AppDatabase {
     return r != null;
   }
 
+  /// 某笔结算覆盖的分摊组（结算明细「AA平分：结算」逐条展示用）
+  Future<List<AaGroup>> groupsOfSettlement(String settlementId) =>
+      (select(aaGroups)..where((t) => t.settlementId.equals(settlementId)))
+          .get();
+
   // ---------- 键值存储（配对信息 / 同步时间） ----------
 
   Stream<List<MetaEntry>> watchMeta() => select(metaEntries).watch();

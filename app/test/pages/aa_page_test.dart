@@ -16,6 +16,13 @@ import 'package:aa_expense_splitter/sync/aa_crypto.dart';
 
 import '../helpers/test_support.dart';
 
+/// 有界泵帧：替代 pumpAndSettle，避免某个动画不停时把整组测试挂死 10 分钟
+Future<void> pumpFrames(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+  await tester.pump(const Duration(seconds: 3));
+}
+
 void main() {
   late FakePathProvider pathProvider;
   late FakeSharePlatform share;
@@ -212,7 +219,7 @@ void main() {
       await disposePage(tester, db);
     });
 
-    testWidgets('结算：确认后核销并生成转账（收款方向）', (tester) async {
+    testWidgets('结算：确认后逐条生成收入账单（收款方向）', (tester) async {
       final db = await pairedDb(groups: [
         AaGroupsCompanion.insert(
             id: 'g1',
@@ -226,34 +233,28 @@ void main() {
       await db.setMeta('partnerUid', 'uid-partner');
       await pumpPage(tester, const AaPage(), db: db);
 
-      // ==== 临时打点（定位挂起步骤） ====
-      debugPrint('[STEP] tap 去结算');
       await tester.tap(find.text('去结算'));
-      debugPrint('[STEP] pumpAndSettle #1');
-      await tester.pumpAndSettle();
-      debugPrint('[STEP] dialog asserts');
+      await pumpFrames(tester);
       expect(find.text('AA 结算'), findsOneWidget);
       expect(find.text('伙伴 转给你 ¥ 50.00'), findsOneWidget);
 
-      debugPrint('[STEP] enterText 备注');
       await tester.enterText(
           find.widgetWithText(TextField, '备注（可选）'), '微信已收');
-      debugPrint('[STEP] tap 已完成转账');
-      await tester.tap(find.text('已完成转账'));
-      debugPrint('[STEP] db asserts (无 pump)');
+      await tester.tap(find.text('确认结算'));
       await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 500)));
-      debugPrint('[STEP] settlements=${(await db.getAllSettlements()).length}');
-      debugPrint('[STEP] g1 settled=${(await db.getAaGroup('g1'))?.settled}');
+          () => Future<void>.delayed(const Duration(milliseconds: 300)));
+      await pumpFrames(tester);
 
-      // 诊断期：只断言 DB（渲染断言与 disposePage 等定位后再恢复）
       expect((await db.getAllSettlements()).single.note, '微信已收');
       expect((await db.getAaGroup('g1'))!.settled, isTrue);
+      // 逐条生成收入（我垫付 → 我收钱），不再生成转账
       final bills = await db.watchAllBills().first;
-      expect(bills.single.settlementId, isNotNull);
-      debugPrint('[STEP] 所有 DB 断言通过（渲染待查）');
-      // 清掉 SnackBar 定时器等，避免 Guarded function conflict 连坐后续用例
-      await tester.pumpAndSettle(const Duration(milliseconds: 50));
+      expect(bills, hasLength(1));
+      final income = bills.single;
+      expect(income.type, 1);
+      expect(income.amount, 5000);
+      expect(income.settlementId, isNotNull);
+      expect(income.toAccountId, isNull);
       await disposePage(tester, db);
     });
 
@@ -293,12 +294,12 @@ void main() {
             () => Future<void>.delayed(const Duration(milliseconds: 100)));
         await tester.pump();
       }
-      await tester.pumpAndSettle();
+      await pumpFrames(tester);
       // 导出成功后弹出分享方式选择
       await tester.tap(find.textContaining('系统分享'));
       await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 100)));
-      await tester.pumpAndSettle();
+      await pumpFrames(tester);
 
       expect(share.lastParams, isNotNull);
       expect(share.lastParams!.files!.single.path, endsWith('.aas'));
@@ -356,7 +357,7 @@ void main() {
       // 文件读取/口令解密是真实异步，需回真实事件循环跑完（testWidgets 默认假异步）
       await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 200)));
-      await tester.pumpAndSettle();
+      await pumpFrames(tester);
 
       expect(find.textContaining('导入成功：新增 1 笔'), findsOneWidget);
       expect(await db.getMeta('partnerUid'), 'uid-partner');
@@ -378,7 +379,7 @@ void main() {
       await tester.tap(find.text('导入伙伴文件'));
       await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 200)));
-      await tester.pumpAndSettle();
+      await pumpFrames(tester);
 
       expect(find.text('导入失败：口令不一致或文件损坏'), findsOneWidget);
       await disposePage(tester, db);
@@ -435,14 +436,15 @@ void main() {
 
       // 点待入账条目 → 打开份额入账面板
       await tester.tap(find.textContaining('总额 ¥ 20.00'));
-      await tester.pumpAndSettle();
+      await pumpFrames(tester);
       expect(find.text('AA 账单入账'), findsOneWidget);
       await tester.tap(find.text('入账并确认'));
-      await tester.pumpAndSettle();
+      await pumpFrames(tester);
 
       expect((await db.getAaGroup('pg1'))!.status, 1);
-      // 列表中状态文本
-      expect(find.textContaining('已确认'), findsOneWidget);
+      // 入账不生成明细账单（图 2），只在 AA 页作为应付跟踪
+      expect(await db.watchAllBills().first, isEmpty);
+      expect(find.textContaining('已入账'), findsOneWidget);
       await disposePage(tester, db);
     });
 
@@ -563,8 +565,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('已解除配对'), findsOneWidget);
       expect(await db.getMeta('pairSecret'), isNull);
-      // 回到配对表单
-      expect(find.text('建立配对'), findsOneWidget);
+      // 回到配对表单（标题与提交按钮都叫「建立配对」）
+      expect(find.text('建立配对'), findsNWidgets(2));
 
       await disposePage(tester, db);
     });

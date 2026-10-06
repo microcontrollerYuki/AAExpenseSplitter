@@ -426,13 +426,13 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                     fontSize: 16, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 4),
-              const Text('确认后将核销全部未结算 AA 账单（退回挂起/已取消的除外），并在账本生成挂账核销转账。',
-                  style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const Text('确认后将核销全部未结算 AA 账单（退回挂起/已取消的除外），'
+                  '并按应付/应收明细逐条生成收支账单。'),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
                 initialValue: selected,
-                decoration:
-                    const InputDecoration(labelText: '实际收/付款账户'),
+                decoration: InputDecoration(
+                    labelText: iReceive ? '收入到账户' : '付款账户'),
                 items: [
                   for (final a in realAccounts)
                     DropdownMenuItem(
@@ -456,7 +456,7 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                 child: const Text('取消')),
             FilledButton(
                 onPressed: () => Navigator.pop(dctx, true),
-                child: const Text('已完成转账')),
+                child: const Text('确认结算')),
           ],
         ),
       ),
@@ -465,7 +465,7 @@ class _DashboardState extends ConsumerState<_Dashboard> {
       try {
         await ref
             .read(aaSyncServiceProvider)
-            .settle(realAccountId: selected, note: noteCtl.text.trim());
+            .settle(accountId: selected, note: noteCtl.text.trim());
         if (context.mounted) {
           AaPage.showSnack(context, '已结算。记得「导出并发送」同步文件通知伙伴');
         }
@@ -928,19 +928,12 @@ class _DashboardState extends ConsumerState<_Dashboard> {
   Future<String?> _openSheet(
       BuildContext context, WidgetRef ref, AaGroup g) {
     if (!context.mounted) return Future.value();
-    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
-    final categories =
-        ref.read(categoriesProvider).value ?? const <Category>[];
     return showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
       builder: (_) => AaShareSheet(
         group: g,
         service: ref.read(aaSyncServiceProvider),
-        accounts: accounts,
-        categories: categories,
-        defaultCategoryId:
-            AaSyncService.guessCategoryForName(g.categoryName, categories),
       ),
     );
   }
@@ -1033,7 +1026,7 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                   size: 20,
                 ),
                 title: Text(
-                    s.receiverUid == myUid ? 'AA结算 · 收款' : 'AA结算 · 转出',
+                    s.receiverUid == myUid ? 'AA结算 · 收款' : 'AA结算 · 付款',
                     style: const TextStyle(fontSize: 14)),
                 subtitle: Text(
                     '${_fmtDate(s.dateMs)}${s.note.isEmpty ? '' : ' · ${s.note}'}',
@@ -1047,9 +1040,63 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                           ? kIncomeColor
                           : kExpenseColor),
                 ),
+                // 点开查看该笔结算覆盖的逐条明细（图 2 右）
+                onTap: () => _settlementDetail(context, ref, s),
               ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 结算明细（图 2 右）：「AA平分：结算」+ 逐条 项目/金额
+  Future<void> _settlementDetail(
+      BuildContext context, WidgetRef ref, Settlement s) async {
+    final groups = await ref
+        .read(databaseProvider)
+        .groupsOfSettlement(s.id);
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dctx) => AlertDialog(
+        title: const Text('AA平分：结算'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: groups.isEmpty
+              ? const Text('该笔结算没有明细记录',
+                  style: TextStyle(fontSize: 13, color: Colors.grey))
+              : ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final g in groups)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 6),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '${g.categoryName}${g.note.isEmpty ? '' : ' · ${g.note}'}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 14),
+                              ),
+                            ),
+                            Text(
+                              '¥ ${centsToText(AaSyncService.shareOfNonPayer(g.totalAmount))}',
+                              style: const TextStyle(
+                                  fontSize: 14, fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: const Text('关闭')),
+        ],
       ),
     );
   }
@@ -1119,197 +1166,42 @@ Future<String?> askReturnReason(BuildContext context) {
   );
 }
 
-/// AA 份额入账面板：接收方选择自己的账户/分类/备注（带默认模板）
-/// 默认模板：账户=AA挂账、分类=按伙伴分类名匹配、备注=「AA · 原备注」
-/// 返回值：'adopt' 已入账并确认 / 'return' 已退回 / null 取消
-class AaShareSheet extends StatefulWidget {
+/// AA 份额入账面板（图 2 流程）：只展示明细并确认入账——不选账户/分类、
+/// 不在明细生成任何信息；付款账户在「去结算」时选择，结算完成后按应付
+/// 明细逐条生成支出账单。返回值：'adopt' 已入账并确认 / 'return' 已退回 / null 取消
+class AaShareSheet extends StatelessWidget {
   const AaShareSheet({
     super.key,
     required this.group,
     required this.service,
-    required this.accounts,
-    required this.categories,
-    this.defaultCategoryId,
   });
 
   final AaGroup group;
   final AaSyncService service;
-  final List<Account> accounts;
-  final List<Category> categories;
-  final String? defaultCategoryId;
 
-  @override
-  State<AaShareSheet> createState() => _AaShareSheetState();
-}
-
-class _AaShareSheetState extends State<AaShareSheet> {
-  late final TextEditingController _noteCtl;
-  late String? _accountId;
-  late String? _categoryId;
-
-  @override
-  void initState() {
-    super.initState();
-    final g = widget.group;
-    _noteCtl = TextEditingController(
-        text: g.note.isEmpty ? 'AA · 伙伴垫付' : 'AA · ${g.note}');
-    _accountId = kAaCreditAccountId;
-    _categoryId = widget.defaultCategoryId;
+  Future<void> _confirm(BuildContext context) async {
+    await service.confirmShare(group: group);
+    if (context.mounted) Navigator.pop(context, 'adopt');
   }
 
-  @override
-  void dispose() {
-    _noteCtl.dispose();
-    super.dispose();
-  }
-
-  Account? get _accObj {
-    for (final a in widget.accounts) {
-      if (a.id == _accountId) return a;
-    }
-    return null;
-  }
-
-  Category? get _catObj {
-    for (final c in widget.categories) {
-      if (c.id == _categoryId) return c;
-    }
-    return null;
-  }
-
-  Future<void> _adopt() async {
-    final accId = _accountId ??
-        (widget.accounts.isNotEmpty ? widget.accounts.first.id : '');
-    if (accId.isEmpty) {
-      Navigator.pop(context, null);
-      return;
-    }
-    await widget.service.adoptShareBill(
-      group: widget.group,
-      accountId: accId,
-      categoryId: _categoryId,
-      note: _noteCtl.text.trim(),
-    );
-    if (mounted) Navigator.pop(context, 'adopt');
-  }
-
-  Future<void> _returnBill() async {
+  Future<void> _returnBill(BuildContext context) async {
     final reason = await askReturnReason(context);
     if (reason == null) return; // 取消
-    await widget.service.setGroupStatus(widget.group.id, 2, reason: reason);
-    if (mounted) Navigator.pop(context, 'return');
-  }
-
-  Future<void> _pickAccount() async {
-    final id = await showModalBottomSheet<String>(
-      context: context,
-      builder: (bctx) => SafeArea(
-        child: ConstrainedBox(
-          // 限高 + 内部滚动，避免账户多时 bottom overflowed
-          constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(bctx).size.height * 0.6),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: Text('选择账户',
-                      style: TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.w600))),
-              Flexible(
-                child: ListView(
-                  shrinkWrap: true,
-                  padding: EdgeInsets.zero,
-                  children: [
-                    for (final a in widget.accounts)
-                      ListTile(
-                        leading:
-                            Text(a.emoji, style: const TextStyle(fontSize: 22)),
-                        title: Text(a.name),
-                        onTap: () => Navigator.pop(bctx, a.id),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (id != null) setState(() => _accountId = id);
-  }
-
-  Future<void> _pickCategory() async {
-    final cats =
-        widget.categories.where((c) => c.kind == 0).toList();
-    final id = await showModalBottomSheet<String>(
-      context: context,
-      builder: (bctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Padding(
-                padding: EdgeInsets.all(12),
-                child: Text('选择分类',
-                    style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w600))),
-            SizedBox(
-              height: 200,
-              child: GridView.count(
-                crossAxisCount: 5,
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                childAspectRatio: 0.95,
-                children: [
-                  for (final c in cats)
-                    InkWell(
-                      borderRadius: BorderRadius.circular(10),
-                      onTap: () => Navigator.pop(bctx, c.id),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          CircleAvatar(
-                            radius: 22,
-                            backgroundColor: c.id == _categoryId
-                                ? kPrimaryColor.withValues(alpha: 0.15)
-                                : Colors.grey.shade100,
-                            child: Text(c.emoji,
-                                style: const TextStyle(fontSize: 21)),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(c.name,
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: c.id == _categoryId
-                                      ? kPrimaryColor
-                                      : Colors.black87)),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (id != null) setState(() => _categoryId = id);
+    await service.setGroupStatus(group.id, 2, reason: reason);
+    if (context.mounted) Navigator.pop(context, 'return');
   }
 
   @override
   Widget build(BuildContext context) {
-    final g = widget.group;
-    final acc = _accObj;
-    final cat = _catObj;
+    final g = group;
     final share = AaSyncService.shareOfNonPayer(g.totalAmount);
     final d = DateTime.fromMillisecondsSinceEpoch(g.dateMs);
     String two(int v) => v.toString().padLeft(2, '0');
 
     return SafeArea(
       child: Padding(
-        padding: EdgeInsets.fromLTRB(16, 16, 16,
-            16 + MediaQuery.of(context).viewInsets.bottom),
+        padding: EdgeInsets.fromLTRB(
+            16, 16, 16, 16 + MediaQuery.of(context).viewInsets.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1318,7 +1210,7 @@ class _AaShareSheetState extends State<AaShareSheet> {
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             Text(
-              '${g.categoryEmoji} ${g.categoryName} · ${d.month}月${d.day}日 ${two(d.hour)}:${two(d.minute)} · 伙伴垫付',
+              '${g.categoryEmoji} ${g.categoryName}${g.note.isEmpty ? '' : ' · ${g.note}'} · ${d.month}月${d.day}日 ${two(d.hour)}:${two(d.minute)} · 伙伴垫付',
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
             const SizedBox(height: 6),
@@ -1338,27 +1230,17 @@ class _AaShareSheetState extends State<AaShareSheet> {
                         fontSize: 13, decoration: TextDecoration.underline)),
               ],
             ),
-            const Divider(height: 20),
-            TextField(
-              controller: _noteCtl,
-              style: const TextStyle(fontSize: 14),
-              decoration: const InputDecoration(
-                hintText: '备注（可修改）',
-                prefixIcon: Icon(Icons.edit_note, size: 20),
-                isDense: true,
-              ),
+            const SizedBox(height: 8),
+            const Text(
+              '入账后仅计入应付账单，不在明细生成信息；付款账户在「去结算」时选择，结算完成后按应付明细逐条生成支出。',
+              style: TextStyle(fontSize: 12, color: Colors.grey, height: 1.5),
             ),
-            _row(Icons.account_balance_wallet, '账户',
-                acc == null ? '选择账户' : '${acc.emoji} ${acc.name}', _pickAccount),
-            _row(Icons.category, '分类',
-                cat == null ? '选择分类' : '${cat.emoji} ${cat.name}', _pickCategory),
-            const SizedBox(height: 10),
+            const Divider(height: 20),
             Row(
               children: [
                 TextButton(
-                  style:
-                      TextButton.styleFrom(foregroundColor: kExpenseColor),
-                  onPressed: _returnBill,
+                  style: TextButton.styleFrom(foregroundColor: kExpenseColor),
+                  onPressed: () => _returnBill(context),
                   child: const Text('退回'),
                 ),
                 const SizedBox(width: 8),
@@ -1366,38 +1248,12 @@ class _AaShareSheetState extends State<AaShareSheet> {
                   child: FilledButton(
                     style:
                         FilledButton.styleFrom(backgroundColor: kPrimaryColor),
-                    onPressed: _adopt,
+                    onPressed: () => _confirm(context),
                     child: const Text('入账并确认'),
                   ),
                 ),
               ],
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _row(IconData icon, String label, String value, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Row(
-          children: [
-            Icon(icon, size: 18, color: Colors.grey),
-            const SizedBox(width: 8),
-            Text(label,
-                style: const TextStyle(fontSize: 13, color: Colors.grey)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(value,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w600)),
-            ),
-            const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
           ],
         ),
       ),

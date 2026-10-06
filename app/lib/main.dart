@@ -72,9 +72,6 @@ Future<void> _openPendingAaSheets() async {
   if (pending.isEmpty) return;
   final ctx = navigatorKey.currentContext;
   if (ctx == null || !ctx.mounted) return;
-  final accounts = await db.getAllAccounts();
-  final categories = await db.getAllCategories();
-  if (!ctx.mounted) return;
   final g = pending.first;
   final res = await showModalBottomSheet<String>(
     context: ctx,
@@ -82,10 +79,6 @@ Future<void> _openPendingAaSheets() async {
     builder: (_) => AaShareSheet(
       group: g,
       service: service,
-      accounts: accounts,
-      categories: categories,
-      defaultCategoryId:
-          AaSyncService.guessCategoryForName(g.categoryName, categories),
     ),
   );
   if (res == null) return; // 用户中断，剩余留在 AA 页处理

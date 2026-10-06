@@ -96,24 +96,9 @@ class AaSyncService {
     await _db.linkBillToAaGroup(billId, groupId);
   }
 
-  /// 收到伙伴确认信息后生成收入（挂账应收 = 伙伴份额，不计收支分类）。
-  /// 幂等：组内已存在收入账单则跳过。
-  Future<void> _ensureCompanionIncome(AaGroup g) async {
-    final linked = await _db.billsOfAaGroup(g.id);
-    for (final b in linked) {
-      if (b.type == 1) return;
-    }
-    await _db.upsertBill(
-      id: const Uuid().v4(),
-      type: 1,
-      amount: shareOfNonPayer(g.totalAmount),
-      categoryId: kAaMarkerCategoryId,
-      accountId: kAaCreditAccountId,
-      dateMs: g.dateMs,
-      note: 'AA应收 · ${g.categoryName}',
-      aaGroupId: g.id,
-    );
-  }
+  /// 收到伙伴确认信息后：不再生成「AA应收」收入账单（收入统一在结算时
+  /// 逐条生成，见 [settle] / [_createSettlementBills]），此处仅保留分摊组状态。
+  // （保留注释锚点：_ensureCompanionIncome 已按 2026-10-06 需求移除）
 
   // ---------- 差额与结算 ----------
 
@@ -133,8 +118,10 @@ class AaSyncService {
     return net;
   }
 
-  /// 我发起结算：核销全部未结算分摊组，并在本地生成挂账核销转账
-  Future<void> settle({required String realAccountId, String note = ''}) async {
+  /// 我发起结算：核销全部可结算分摊组，并**逐条**把应收/应付转成明细收支账单
+  /// （图 2）——我垫付的每条生成收入（我收钱）、我应付的每条生成支出（我付钱），
+  /// 账户统一为结算时选择的 [accountId]。不再生成任何转账。
+  Future<void> settle({required String accountId, String note = ''}) async {
     final net = await computeNet();
     if (net == 0) return;
     final myUid = await _db.getMeta('myUid') ?? '';
@@ -146,6 +133,11 @@ class AaSyncService {
     final id = const Uuid().v4();
     final receiverUid = net > 0 ? myUid : partnerUid;
     final amount = net.abs();
+    // 核销前快照：本次结算覆盖的分摊组（逐条转明细的依据）
+    final covered = [
+      for (final g in await _db.getAllAaGroups())
+        if (countsTowardBalance(g)) g
+    ];
     await _db.upsertSettlement(SettlementsCompanion.insert(
       id: id,
       receiverUid: receiverUid,
@@ -156,17 +148,9 @@ class AaSyncService {
       note: Value(note),
     ));
     await _db.markSettledUpTo(now, id);
-    final iReceive = net > 0;
-    await _db.upsertBill(
-      id: const Uuid().v4(),
-      type: 2,
-      amount: amount,
-      accountId: iReceive ? kAaCreditAccountId : realAccountId,
-      toAccountId: iReceive ? realAccountId : kAaCreditAccountId,
-      dateMs: now,
-      note: note.isEmpty ? (iReceive ? 'AA结算 · 收款' : 'AA结算 · 转出') : note,
-      settlementId: id,
-    );
+    await _db.setMeta(kAaSettleAccountKey, accountId);
+    await _createSettlementBillsFromGroups(
+        settlementId: id, covered: covered, accountId: accountId);
   }
 
   /// 接收方确认 / 退回（更新既有行，缺省字段走 update.write，避免 upsert 缺必填字段报错）
@@ -296,6 +280,8 @@ class AaSyncService {
     var newGroups = 0;
     var updated = 0;
     var newSettles = 0;
+    // 结算落账任务：需在分摊组合并完成后再逐条生成（依赖该结算覆盖的分摊组）
+    final settleJobs = <Map<String, Object?>>[];
 
     // 先应用结算（会顺带标记旧分摊组），再合并分摊组
     for (final s in (data['settlements'] as List? ?? [])) {
@@ -313,12 +299,7 @@ class AaSyncService {
         note: Value((m['note'] as String?) ?? ''),
       ));
       await _db.markSettledUpTo(m['cutoffMs'] as int, id);
-      await _createSettlementBills(
-        settlementId: id,
-        receiverUid: m['receiverUid'] as String,
-        amount: m['amount'] as int,
-        dateMs: m['dateMs'] as int,
-      );
+      settleJobs.add(m);
     }
 
     for (final g in (data['groups'] as List? ?? [])) {
@@ -347,12 +328,8 @@ class AaSyncService {
           createdAtMs: m['createdAtMs'] as int? ?? 0,
           updatedAtMs: incomingUpdated,
         ));
-        // 伙伴发起的 AA 账单：不静默建账，进「待入账」，由接收方选账户/分类/备注后入账
-        // 我自己发起的账单（伙伴导出回传）：已确认则生成收入（收到应付方确认信息）
-        if (ownerUid == myUid && (m['status'] as int? ?? 0) == 1) {
-          final inserted = await _db.getAaGroup(id);
-          if (inserted != null) await _ensureCompanionIncome(inserted);
-        }
+        // 伙伴发起的 AA 账单：不静默建账，进「待入账」；确认后也只记应付，
+        // 明细收支在结算时逐条生成（图 2 流程）
       } else if (incomingUpdated > local.updatedAtMs) {
         updated++;
         final newTotal = m['totalAmount'] as int;
@@ -387,11 +364,6 @@ class AaSyncService {
             }
           }
         }
-        // 我发起的账单被伙伴确认（回传 status=1）→ 生成收入账单
-        if (local.ownerUid == myUid && newStatus == 1) {
-          final fresh = await _db.getAaGroup(id);
-          if (fresh != null) await _ensureCompanionIncome(fresh);
-        }
         // 伙伴「取消 AA / 删除」（status=3 墓碑）→ 同步作废我的份额账单（§4.6 双方软删除）
         if (local.ownerUid != myUid && newStatus == 3) {
           final linked = await _db.billsOfAaGroup(id);
@@ -402,6 +374,16 @@ class AaSyncService {
       }
     }
 
+    // 分摊组合并完成后再落账结算明细（与应付/应收逐条对应）
+    for (final m in settleJobs) {
+      await _createSettlementBills(
+        settlementId: m['id'] as String,
+        receiverUid: m['receiverUid'] as String,
+        amount: m['amount'] as int,
+        dateMs: m['dateMs'] as int,
+      );
+    }
+
     final t = DateTime.now();
     String two(int v) => v.toString().padLeft(2, '0');
     await _db.setMeta(
@@ -409,42 +391,21 @@ class AaSyncService {
     return '导入成功：新增 $newGroups 笔 AA 账单、更新 $updated、结算 $newSettles 笔';
   }
 
-  /// 待入账的伙伴 AA 账单（对方发起、本机尚未生成份额账单、未退回未结算）
+  /// 待入账的伙伴 AA 账单（对方发起、尚未入账确认、未退回未结算）。
+  /// 入账不生成明细账单，因此以分摊组状态为准（不再看账单关联）
   Future<List<AaGroup>> pendingShareGroups() async {
     final myUid = await _db.getMeta('myUid') ?? '';
     if (myUid.isEmpty) return const [];
     final groups = await _db.getAllAaGroups();
-    final bills = await _db.getAllBills();
-    final linked = <String>{
-      for (final b in bills)
-        if (b.aaGroupId != null) b.aaGroupId!
-    };
     return groups
         .where((g) =>
-            g.ownerUid != myUid &&
-            g.status == 0 &&
-            !g.settled &&
-            !linked.contains(g.id))
+            g.ownerUid != myUid && g.status == 0 && !g.settled)
         .toList();
   }
 
-  /// 接收方入账：用自己选的账户/分类/备注生成本机份额账单，并标记已确认
-  Future<void> adoptShareBill({
-    required AaGroup group,
-    required String accountId,
-    String? categoryId,
-    required String note,
-  }) async {
-    await _db.upsertBill(
-      id: const Uuid().v4(),
-      type: 0,
-      amount: shareOfNonPayer(group.totalAmount),
-      categoryId: categoryId,
-      accountId: accountId,
-      dateMs: group.dateMs,
-      note: note,
-      aaGroupId: group.id,
-    );
+  /// 接收方入账（图 2）：不生成明细账单、不选择账户/分类——应付只在 AA 页跟踪；
+  /// 付款账户在「去结算」时选择，结算完成后按应付明细逐条生成支出账单
+  Future<void> confirmShare({required AaGroup group}) async {
     await setGroupStatus(group.id, 1);
   }
 
@@ -480,16 +441,11 @@ class AaSyncService {
     }
   }
 
-  /// 批量入账（长按批量确认）：默认模板 = AA挂账 + 按名称匹配分类 + 默认备注
+  /// 批量入账（长按批量确认）：与 [confirmShare] 同语义，只确认不建明细
   Future<void> adoptShareBillsDefault(
       List<AaGroup> groups, List<Category> categories) async {
     for (final g in groups) {
-      await adoptShareBill(
-        group: g,
-        accountId: kAaCreditAccountId,
-        categoryId: guessCategoryForName(g.categoryName, categories),
-        note: g.note.isEmpty ? 'AA平分 · 伙伴垫付' : 'AA平分 · ${g.note}',
-      );
+      await confirmShare(group: g);
     }
   }
 
@@ -502,7 +458,56 @@ class AaSyncService {
     return null;
   }
 
-  /// 结算落账：收款方 挂账→真实账户；转出方 真实账户→挂账（幂等）
+  /// 结算账户偏好（[settle] 选定后保存；导入伙伴结算时沿用）
+  static const kAaSettleAccountKey = 'aaSettleAccountId';
+
+  /// 结算落账账户：优先沿用上次结算选择，否则取第一个真实账户；
+  /// 无真实账户时返回 null（跳过落账）
+  Future<String?> _preferredSettleAccount() async {
+    final accounts = await _db.getAllAccounts();
+    final preferred = await _db.getMeta(kAaSettleAccountKey);
+    for (final a in accounts) {
+      if (a.id == preferred) return a.id;
+    }
+    for (final a in accounts) {
+      if (a.id != kAaCreditAccountId) return a.id;
+    }
+    return null;
+  }
+
+  /// 逐条生成结算收支账单：我垫付的组 → 收入（我收钱）；我应付的组 → 支出（我付钱）。
+  /// 结算账单只带 settlementId（不挂 aaGroupId），与分摊组一一对应、幂等。
+  Future<void> _createSettlementBillsFromGroups({
+    required String settlementId,
+    required List<AaGroup> covered,
+    required String accountId,
+  }) async {
+    if (await _db.hasSettlementBill(settlementId)) return;
+    final myUid = await _db.getMeta('myUid') ?? '';
+    if (myUid.isEmpty) return;
+    final categories = await _db.getAllCategories();
+    for (final g in covered) {
+      final iAmPayer = g.payerUid == myUid;
+      final share = shareOfNonPayer(g.totalAmount);
+      if (share <= 0) continue;
+      await _db.upsertBill(
+        id: const Uuid().v4(),
+        type: iAmPayer ? 1 : 0,
+        categoryId: iAmPayer
+            ? 'inc_other'
+            : (guessCategoryForName(g.categoryName, categories) ??
+                'cat_other_exp'),
+        amount: share,
+        accountId: accountId,
+        dateMs: g.dateMs,
+        note: 'AA平分：${g.categoryName}${g.note.isEmpty ? '' : ' · ${g.note}'}',
+        settlementId: settlementId,
+      );
+    }
+  }
+
+  /// 结算落账（导入伙伴结算文件时）：按该结算覆盖的分摊组逐条生成收支账单；
+  /// 旧数据缺明细时退回按净额记一笔（幂等）
   Future<void> _createSettlementBills({
     required String settlementId,
     required String receiverUid,
@@ -512,24 +517,27 @@ class AaSyncService {
     if (await _db.hasSettlementBill(settlementId)) return;
     final myUid = await _db.getMeta('myUid') ?? '';
     if (myUid.isEmpty) return;
-    final accounts = await _db.getAllAccounts();
-    Account? real;
-    for (final a in accounts) {
-      if (a.id != kAaCreditAccountId) {
-        real = a;
-        break;
-      }
+    final covered = [
+      for (final g in await _db.getAllAaGroups())
+        if (g.settlementId == settlementId) g
+    ];
+    final accountId = await _preferredSettleAccount();
+    if (accountId == null) return; // 无真实账户：跳过落账
+    if (covered.isNotEmpty) {
+      await _createSettlementBillsFromGroups(
+          settlementId: settlementId, covered: covered, accountId: accountId);
+      return;
     }
-    if (real == null) return;
+    // 兜底：没有分摊组明细（旧版本结算）→ 按净额记一笔收入/支出
     final iReceive = receiverUid == myUid;
     await _db.upsertBill(
       id: const Uuid().v4(),
-      type: 2,
+      type: iReceive ? 1 : 0,
       amount: amount,
-      accountId: iReceive ? kAaCreditAccountId : real.id,
-      toAccountId: iReceive ? real.id : kAaCreditAccountId,
+      categoryId: iReceive ? 'inc_other' : 'cat_other_exp',
+      accountId: accountId,
       dateMs: dateMs,
-      note: iReceive ? 'AA结算 · 收款' : 'AA结算 · 转出',
+      note: 'AA平分：结算',
       settlementId: settlementId,
     );
   }
