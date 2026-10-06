@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/app_database.dart';
+import '../data/presets.dart';
 import '../providers.dart';
 import '../recognition/bill_ocr.dart';
 import '../sync/aa_sync_service.dart';
@@ -231,8 +232,16 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
 
     if (cents <= 0) return _snack('请输入金额');
     if (accId.isEmpty) return _snack('请先在「我的 → 账户与资产」中创建账户');
-    if (_type == 2 && (toId.isEmpty || toId == accId)) {
-      return _snack('转入账户需与转出账户不同');
+    // 转账只允许本人钱包互转：双方必填、互不相同、且不得涉及「AA挂账」
+    // （跨人资金往来应记收入/支出，不允许以转账形式出现）
+    if (_type == 2) {
+      if (accId.isEmpty || toId.isEmpty) {
+        return _snack('转账必须同时选择转出与转入账户');
+      }
+      if (toId == accId) return _snack('转入账户需与转出账户不同');
+      if (accId == kAaCreditAccountId || toId == kAaCreditAccountId) {
+        return _snack('转账仅限本人钱包之间，跨人往来请记收入或支出');
+      }
     }
 
     // 防重复入账：已存在相似账单（同类型 · 同金额 · 同一天）时需用户确认
@@ -649,7 +658,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   // ---------- 账户选择 ----------
 
   Future<void> _pickAccount({bool to = false}) async {
-    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    var accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    // 转账只允许本人钱包互转：选择器直接排除「AA挂账」虚拟账户
+    if (_type == 2) {
+      accounts = accounts.where((a) => a.id != kAaCreditAccountId).toList();
+    }
     final picked = await showModalBottomSheet<String>(
       context: context,
       builder: (sctx) => SafeArea(
