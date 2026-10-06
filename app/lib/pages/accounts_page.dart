@@ -159,6 +159,13 @@ class _AccountDialogState extends State<_AccountDialog> {
         .showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  /// 资产名称规范化（仅用于重名判定）：去空白、忽略大小写、去掉开头的
+  /// 「AA」类前缀（AA-现金 / AA_现金 / AA·现金 / AA现金 与「现金」视为重名）
+  static String _normAssetName(String s) {
+    final v = s.replaceAll(RegExp(r'\s+'), '').toLowerCase();
+    return v.replaceFirst(RegExp(r'^aa[-_.·—－]?\s*(?=[\u4e00-\u9fa5])'), '');
+  }
+
   Future<void> _save() async {
     try {
       debugPrint('[AccountDialog] save pressed, name=${_nameCtl.text}');
@@ -166,6 +173,16 @@ class _AccountDialogState extends State<_AccountDialog> {
       if (name.isEmpty) {
         _snack('请填写账户名称');
         return;
+      }
+      // 不允许重名资产（含 AA-现金 / AA-银行卡 这类带前缀的变体重名）
+      final norm = _normAssetName(name);
+      final currentId = widget.account?.id;
+      for (final a in await widget.db.getAllAccounts()) {
+        if (a.id == currentId) continue;
+        if (_normAssetName(a.name) == norm) {
+          _snack('已有同名账户，不允许重名');
+          return;
+        }
       }
       final id =
           widget.account?.id ?? 'acc_${const Uuid().v4().substring(0, 8)}';

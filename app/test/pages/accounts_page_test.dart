@@ -73,6 +73,42 @@ void main() {
     await disposePage(tester, db);
   });
 
+  testWidgets('添加账户：与已有账户重名被拒绝', (tester) async {
+    final db = await pumpPage(tester, const AccountsPage());
+
+    await tester.tap(find.byTooltip('添加账户'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, '名称'), '现金');
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await tester.pump();
+
+    expect(find.text('已有同名账户，不允许重名'), findsOneWidget);
+    // 对话框仍在、未入库
+    expect(find.text('取消'), findsOneWidget);
+    final acc = await db.getAllAccounts();
+    expect(acc.where((a) => a.name == '现金').length, 1);
+
+    await disposePage(tester, db);
+  });
+
+  testWidgets('添加账户：AA- 前缀变体重名同样被拒绝', (tester) async {
+    final db = await pumpPage(tester, const AccountsPage());
+
+    await tester.tap(find.byTooltip('添加账户'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, '名称'), 'AA-现金');
+    await tester.pump();
+    await tester.tap(find.text('保存'));
+    await tester.pump();
+
+    expect(find.text('已有同名账户，不允许重名'), findsOneWidget);
+    final acc = await db.getAllAccounts();
+    expect(acc.any((a) => a.name == 'AA-现金'), isFalse);
+
+    await disposePage(tester, db);
+  });
+
   testWidgets('添加账户：金额输入自动千分位且拒绝非法字符', (tester) async {
     final db = await pumpPage(tester, const AccountsPage());
 
