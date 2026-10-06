@@ -13,7 +13,7 @@ import 'aa_crypto.dart';
 ///
 /// 记账口径（与设计文档 §4.4 一致）：
 /// - 垫付方：全额账单记真实账户；同时生成一笔「AA往来」挂账应收 = 伙伴份额
-/// - 接收方：自动生成份额账单（50%，奇数分多出的 1 分归垫付方）记「AA挂账」
+/// - 接收方：份额账单记「AA挂账」；奇数总额多出的 1 分归垫付方承担
 /// - 双方「AA挂账」余额互为相反数，差额 = |挂账余额|
 class AaSyncService {
   AaSyncService(this._db);
@@ -21,7 +21,7 @@ class AaSyncService {
   final AppDatabase _db;
 
   /// 非垫付方（伙伴垫付时）我的份额：奇数总额多出的 1 分归垫付方承担
-  static int shareOfNonPayer(int total) => (total + 1) ~/ 2;
+  static int shareOfNonPayer(int total) => total ~/ 2;
 
   // ---------- 配对 ----------
 
@@ -65,7 +65,10 @@ class AaSyncService {
 
   // ---------- 记一笔 AA（垫付方发起） ----------
 
-  /// 保存全额账单后调用：创建分摊组、关联账单、生成挂账应收
+  /// 保存全额账单后调用（新建与普通账单后补转 AA 共用）：
+  /// 创建分摊组并关联账单。**不在此刻生成收入账单**（设计图：AA平分支出时
+  /// 不应产生收入）——收入（挂账应收）在收到伙伴确认信息导入后由
+  /// [_ensureCompanionIncome] 生成。
   Future<void> createAaBillFor({
     required String billId,
     required int totalAmount,
@@ -91,20 +94,31 @@ class AaSyncService {
       updatedAtMs: now,
     ));
     await _db.linkBillToAaGroup(billId, groupId);
-    // 挂账应收 = 伙伴份额（不计收支分类，不影响收支统计）
+  }
+
+  /// 收到伙伴确认信息后生成收入（挂账应收 = 伙伴份额，不计收支分类）。
+  /// 幂等：组内已存在收入账单则跳过。
+  Future<void> _ensureCompanionIncome(AaGroup g) async {
+    final linked = await _db.billsOfAaGroup(g.id);
+    for (final b in linked) {
+      if (b.type == 1) return;
+    }
     await _db.upsertBill(
       id: const Uuid().v4(),
       type: 1,
-      amount: shareOfNonPayer(totalAmount),
+      amount: shareOfNonPayer(g.totalAmount),
       categoryId: kAaMarkerCategoryId,
       accountId: kAaCreditAccountId,
-      dateMs: dateMs,
-      note: 'AA垫付 · 伙伴应付',
-      aaGroupId: groupId,
+      dateMs: g.dateMs,
+      note: 'AA应收 · ${g.categoryName}',
+      aaGroupId: g.id,
     );
   }
 
   // ---------- 差额与结算 ----------
+
+  /// 计入差额的分摊组：未结算、未退回（挂起待处理）、未取消（§4.3 退回处理期间不计差额）
+  static bool countsTowardBalance(AaGroup g) => !g.settled && g.status <= 1;
 
   /// 净应收（分）：>0 伙伴应转给我；<0 我应转给伙伴
   Future<int> computeNet() async {
@@ -112,7 +126,7 @@ class AaSyncService {
     final groups = await _db.getAllAaGroups();
     var net = 0;
     for (final g in groups) {
-      if (g.settled) continue;
+      if (!countsTowardBalance(g)) continue;
       final partnerShare = shareOfNonPayer(g.totalAmount);
       net += g.payerUid == myUid ? partnerShare : -partnerShare;
     }
@@ -155,17 +169,51 @@ class AaSyncService {
     );
   }
 
-  /// 接收方确认 / 退回
-  Future<void> setGroupStatus(String groupId, int status) async {
+  /// 接收方确认 / 退回（更新既有行，缺省字段走 update.write，避免 upsert 缺必填字段报错）
+  /// 退回（status=2）可附一句理由，账单挂起不计差额，等待发起方处理（§4.3）
+  Future<void> setGroupStatus(String groupId, int status,
+      {String? reason}) async {
     final myUid = await _db.getMeta('myUid') ?? '';
     final now = DateTime.now().millisecondsSinceEpoch;
-    await _db.upsertAaGroup(AaGroupsCompanion(
-      id: Value(groupId),
+    await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
+        .write(AaGroupsCompanion(
       status: Value(status),
       statusByUid: Value(myUid),
       statusAtMs: Value(now),
+      statusNote: Value(reason ?? ''),
       updatedAtMs: Value(now),
     ));
+  }
+
+  /// 发起方处理被退回的 AA 账单（§4.3 退回处理）：
+  /// [deleteOwnerBill] = true 走「删除」（全额账单软删除）；
+  /// false 走「取消 AA」（全额账单转普通账单，保留）。
+  /// 分摊组置 status=3（已取消）作为墓碑同步给伙伴，对方导入后删除其份额账单。
+  Future<void> cancelAaGroup({
+    required String groupId,
+    required bool deleteOwnerBill,
+  }) async {
+    final myUid = await _db.getMeta('myUid') ?? '';
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final group = await _db.getAaGroup(groupId);
+    if (group == null) return;
+    await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
+        .write(AaGroupsCompanion(
+      status: const Value(3),
+      statusByUid: Value(myUid),
+      statusAtMs: Value(now),
+      statusNote: Value(deleteOwnerBill ? '已删除' : '已取消AA'),
+      updatedAtMs: Value(now),
+    ));
+    final linked = await _db.billsOfAaGroup(groupId);
+    for (final b in linked) {
+      final isFullExpense = b.type == 0 && b.amount == group.totalAmount;
+      if (isFullExpense && !deleteOwnerBill) {
+        await _db.unlinkBillFromAaGroup(b.id); // 取消 AA：转普通账单
+      } else {
+        await _db.softDeleteBill(b.id); // 全额账单删除 / 挂账应收作废
+      }
+    }
   }
 
   // ---------- 导出 ----------
@@ -197,6 +245,7 @@ class AaSyncService {
             'status': g.status,
             'statusByUid': g.statusByUid,
             'statusAtMs': g.statusAtMs,
+            'statusNote': g.statusNote,
             'settled': g.settled,
             'settlementId': g.settlementId,
             'createdAtMs': g.createdAtMs,
@@ -290,26 +339,66 @@ class AaSyncService {
           categoryName: Value((m['categoryName'] as String?) ?? ''),
           categoryEmoji: Value((m['categoryEmoji'] as String?) ?? '🤝'),
           status: Value(m['status'] as int? ?? 0),
+          statusByUid: Value(m['statusByUid'] as String?),
+          statusAtMs: Value(m['statusAtMs'] as int?),
+          statusNote: Value(m['statusNote'] as String?),
           settled: Value(m['settled'] as bool? ?? false),
           settlementId: Value(m['settlementId'] as String?),
           createdAtMs: m['createdAtMs'] as int? ?? 0,
           updatedAtMs: incomingUpdated,
         ));
-        // 伙伴发起的 AA 账单 → 在我的账本生成份额账单（挂账）
-        if (ownerUid != myUid) {
-          await _createShareBill(id, m);
+        // 伙伴发起的 AA 账单：不静默建账，进「待入账」，由接收方选账户/分类/备注后入账
+        // 我自己发起的账单（伙伴导出回传）：已确认则生成收入（收到应付方确认信息）
+        if (ownerUid == myUid && (m['status'] as int? ?? 0) == 1) {
+          final inserted = await _db.getAaGroup(id);
+          if (inserted != null) await _ensureCompanionIncome(inserted);
         }
       } else if (incomingUpdated > local.updatedAtMs) {
         updated++;
-        await _db.upsertAaGroup(AaGroupsCompanion(
-          id: Value(id),
-          status: Value(m['status'] as int? ?? local.status),
+        final newTotal = m['totalAmount'] as int;
+        final newDateMs = m['dateMs'] as int;
+        final newStatus = m['status'] as int? ?? local.status;
+        // 更新既有行走 update.write：upsert(insertOnConflictUpdate) 缺必填字段会抛
+        // InvalidDataException，即使行已存在也先做 INSERT 完整性校验
+        await (_db.update(_db.aaGroups)..where((t) => t.id.equals(id)))
+            .write(AaGroupsCompanion(
+          totalAmount: Value(newTotal),
+          dateMs: Value(newDateMs),
+          note: Value((m['note'] as String?) ?? ''),
+          categoryName: Value((m['categoryName'] as String?) ?? ''),
+          categoryEmoji: Value((m['categoryEmoji'] as String?) ?? '🤝'),
+          status: Value(newStatus),
           statusByUid: Value(m['statusByUid'] as String?),
           statusAtMs: Value(m['statusAtMs'] as int?),
+          statusNote: Value(m['statusNote'] as String?),
           settled: Value(m['settled'] as bool? ?? local.settled),
           settlementId: Value(m['settlementId'] as String?),
           updatedAtMs: Value(incomingUpdated),
         ));
+        // 伙伴改了金额/日期 → 同步更新本机份额账单（金额=新份额，日期跟随）
+        if (local.ownerUid != myUid &&
+            newStatus <= 1 &&
+            (local.totalAmount != newTotal || local.dateMs != newDateMs)) {
+          final linked = await _db.billsOfAaGroup(id);
+          for (final b in linked) {
+            if (b.type == 0) {
+              await _db.updateBillAmountAndDate(
+                  b.id, shareOfNonPayer(newTotal), newDateMs);
+            }
+          }
+        }
+        // 我发起的账单被伙伴确认（回传 status=1）→ 生成收入账单
+        if (local.ownerUid == myUid && newStatus == 1) {
+          final fresh = await _db.getAaGroup(id);
+          if (fresh != null) await _ensureCompanionIncome(fresh);
+        }
+        // 伙伴「取消 AA / 删除」（status=3 墓碑）→ 同步作废我的份额账单（§4.6 双方软删除）
+        if (local.ownerUid != myUid && newStatus == 3) {
+          final linked = await _db.billsOfAaGroup(id);
+          for (final b in linked) {
+            await _db.softDeleteBill(b.id);
+          }
+        }
       }
     }
 
@@ -320,29 +409,97 @@ class AaSyncService {
     return '导入成功：新增 $newGroups 笔 AA 账单、更新 $updated、结算 $newSettles 笔';
   }
 
-  /// 伙伴垫付的 AA 账单 → 我的份额支出账单（记 AA挂账，不计入真实资产）
-  Future<void> _createShareBill(String groupId, Map<String, Object?> m) async {
-    final total = m['totalAmount'] as int;
-    final catName = m['categoryName'] as String? ?? '';
-    final categories = await _db.getAllCategories();
-    String catId = 'cat_other_exp';
-    for (final c in categories) {
-      if (c.name == catName && c.kind == 0) {
-        catId = c.id;
-        break;
-      }
-    }
-    final note = (m['note'] as String?) ?? '';
+  /// 待入账的伙伴 AA 账单（对方发起、本机尚未生成份额账单、未退回未结算）
+  Future<List<AaGroup>> pendingShareGroups() async {
+    final myUid = await _db.getMeta('myUid') ?? '';
+    if (myUid.isEmpty) return const [];
+    final groups = await _db.getAllAaGroups();
+    final bills = await _db.getAllBills();
+    final linked = <String>{
+      for (final b in bills)
+        if (b.aaGroupId != null) b.aaGroupId!
+    };
+    return groups
+        .where((g) =>
+            g.ownerUid != myUid &&
+            g.status == 0 &&
+            !g.settled &&
+            !linked.contains(g.id))
+        .toList();
+  }
+
+  /// 接收方入账：用自己选的账户/分类/备注生成本机份额账单，并标记已确认
+  Future<void> adoptShareBill({
+    required AaGroup group,
+    required String accountId,
+    String? categoryId,
+    required String note,
+  }) async {
     await _db.upsertBill(
       id: const Uuid().v4(),
       type: 0,
-      amount: shareOfNonPayer(total),
-      categoryId: catId,
-      accountId: kAaCreditAccountId,
-      dateMs: m['dateMs'] as int,
-      note: note.isEmpty ? 'AA · 伙伴垫付' : 'AA · $note',
-      aaGroupId: groupId,
+      amount: shareOfNonPayer(group.totalAmount),
+      categoryId: categoryId,
+      accountId: accountId,
+      dateMs: group.dateMs,
+      note: note,
+      aaGroupId: group.id,
     );
+    await setGroupStatus(group.id, 1);
+  }
+
+  /// 垫付方修改 AA 账单后：更新分摊组，状态回「待伙伴确认」（设计图「待修改」），
+  /// 并撤回已生成的收入账单（回到未确认状态，伙伴重新确认后再生成）
+  Future<void> ownerUpdatedAaGroup({
+    required String groupId,
+    required int newTotal,
+    required int dateMs,
+    required String note,
+    required String categoryName,
+    required String categoryEmoji,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
+        .write(AaGroupsCompanion(
+      totalAmount: Value(newTotal),
+      dateMs: Value(dateMs),
+      note: Value(note),
+      categoryName: Value(categoryName),
+      categoryEmoji: Value(categoryEmoji),
+      status: const Value(0),
+      statusByUid: const Value<String?>(null),
+      statusAtMs: const Value<int?>(null),
+      statusNote: const Value<String?>(null),
+      updatedAtMs: Value(now),
+    ));
+    final linked = await _db.billsOfAaGroup(groupId);
+    for (final b in linked) {
+      if (b.type == 1) {
+        await _db.softDeleteBill(b.id);
+      }
+    }
+  }
+
+  /// 批量入账（长按批量确认）：默认模板 = AA挂账 + 按名称匹配分类 + 默认备注
+  Future<void> adoptShareBillsDefault(
+      List<AaGroup> groups, List<Category> categories) async {
+    for (final g in groups) {
+      await adoptShareBill(
+        group: g,
+        accountId: kAaCreditAccountId,
+        categoryId: guessCategoryForName(g.categoryName, categories),
+        note: g.note.isEmpty ? 'AA平分 · 伙伴垫付' : 'AA平分 · ${g.note}',
+      );
+    }
+  }
+
+  /// 按分类名匹配本地分类（接收方入账默认模板用）
+  static String? guessCategoryForName(String? name, List<Category> categories) {
+    if (name == null || name.isEmpty) return null;
+    for (final c in categories) {
+      if (c.kind == 0 && c.name == name) return c.id;
+    }
+    return null;
   }
 
   /// 结算落账：收款方 挂账→真实账户；转出方 真实账户→挂账（幂等）

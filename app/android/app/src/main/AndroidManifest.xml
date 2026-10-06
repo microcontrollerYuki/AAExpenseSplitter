@@ -24,6 +24,23 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- .aas 同步文件：文件管理器 / 微信「打开方式」直接导入（content://，按 DISPLAY_NAME 过滤 .aas） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-aas" />
+            </intent-filter>
+            <!-- .aas 同步文件：旧式 file:// 路径（按扩展名匹配） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.aas" />
+                <data android:pathPattern=".*\\..*\\.aas" />
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

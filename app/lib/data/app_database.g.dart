@@ -1885,6 +1885,17 @@ class $AaGroupsTable extends AaGroups with TableInfo<$AaGroupsTable, AaGroup> {
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _statusNoteMeta = const VerificationMeta(
+    'statusNote',
+  );
+  @override
+  late final GeneratedColumn<String> statusNote = GeneratedColumn<String>(
+    'status_note',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _settledMeta = const VerificationMeta(
     'settled',
   );
@@ -1946,6 +1957,7 @@ class $AaGroupsTable extends AaGroups with TableInfo<$AaGroupsTable, AaGroup> {
     status,
     statusByUid,
     statusAtMs,
+    statusNote,
     settled,
     settlementId,
     createdAtMs,
@@ -2051,6 +2063,12 @@ class $AaGroupsTable extends AaGroups with TableInfo<$AaGroupsTable, AaGroup> {
         ),
       );
     }
+    if (data.containsKey('status_note')) {
+      context.handle(
+        _statusNoteMeta,
+        statusNote.isAcceptableOrUnknown(data['status_note']!, _statusNoteMeta),
+      );
+    }
     if (data.containsKey('settled')) {
       context.handle(
         _settledMeta,
@@ -2141,6 +2159,10 @@ class $AaGroupsTable extends AaGroups with TableInfo<$AaGroupsTable, AaGroup> {
         DriftSqlType.int,
         data['${effectivePrefix}status_at_ms'],
       ),
+      statusNote: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}status_note'],
+      ),
       settled: attachedDatabase.typeMapping.read(
         DriftSqlType.bool,
         data['${effectivePrefix}settled'],
@@ -2178,6 +2200,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
   final int status;
   final String? statusByUid;
   final int? statusAtMs;
+  final String? statusNote;
   final bool settled;
   final String? settlementId;
   final int createdAtMs;
@@ -2194,6 +2217,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
     required this.status,
     this.statusByUid,
     this.statusAtMs,
+    this.statusNote,
     required this.settled,
     this.settlementId,
     required this.createdAtMs,
@@ -2216,6 +2240,9 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
     }
     if (!nullToAbsent || statusAtMs != null) {
       map['status_at_ms'] = Variable<int>(statusAtMs);
+    }
+    if (!nullToAbsent || statusNote != null) {
+      map['status_note'] = Variable<String>(statusNote);
     }
     map['settled'] = Variable<bool>(settled);
     if (!nullToAbsent || settlementId != null) {
@@ -2243,6 +2270,9 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
       statusAtMs: statusAtMs == null && nullToAbsent
           ? const Value.absent()
           : Value(statusAtMs),
+      statusNote: statusNote == null && nullToAbsent
+          ? const Value.absent()
+          : Value(statusNote),
       settled: Value(settled),
       settlementId: settlementId == null && nullToAbsent
           ? const Value.absent()
@@ -2269,6 +2299,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
       status: serializer.fromJson<int>(json['status']),
       statusByUid: serializer.fromJson<String?>(json['statusByUid']),
       statusAtMs: serializer.fromJson<int?>(json['statusAtMs']),
+      statusNote: serializer.fromJson<String?>(json['statusNote']),
       settled: serializer.fromJson<bool>(json['settled']),
       settlementId: serializer.fromJson<String?>(json['settlementId']),
       createdAtMs: serializer.fromJson<int>(json['createdAtMs']),
@@ -2290,6 +2321,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
       'status': serializer.toJson<int>(status),
       'statusByUid': serializer.toJson<String?>(statusByUid),
       'statusAtMs': serializer.toJson<int?>(statusAtMs),
+      'statusNote': serializer.toJson<String?>(statusNote),
       'settled': serializer.toJson<bool>(settled),
       'settlementId': serializer.toJson<String?>(settlementId),
       'createdAtMs': serializer.toJson<int>(createdAtMs),
@@ -2309,6 +2341,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
     int? status,
     Value<String?> statusByUid = const Value.absent(),
     Value<int?> statusAtMs = const Value.absent(),
+    Value<String?> statusNote = const Value.absent(),
     bool? settled,
     Value<String?> settlementId = const Value.absent(),
     int? createdAtMs,
@@ -2325,6 +2358,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
     status: status ?? this.status,
     statusByUid: statusByUid.present ? statusByUid.value : this.statusByUid,
     statusAtMs: statusAtMs.present ? statusAtMs.value : this.statusAtMs,
+    statusNote: statusNote.present ? statusNote.value : this.statusNote,
     settled: settled ?? this.settled,
     settlementId: settlementId.present ? settlementId.value : this.settlementId,
     createdAtMs: createdAtMs ?? this.createdAtMs,
@@ -2353,6 +2387,9 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
       statusAtMs: data.statusAtMs.present
           ? data.statusAtMs.value
           : this.statusAtMs,
+      statusNote: data.statusNote.present
+          ? data.statusNote.value
+          : this.statusNote,
       settled: data.settled.present ? data.settled.value : this.settled,
       settlementId: data.settlementId.present
           ? data.settlementId.value
@@ -2380,6 +2417,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
           ..write('status: $status, ')
           ..write('statusByUid: $statusByUid, ')
           ..write('statusAtMs: $statusAtMs, ')
+          ..write('statusNote: $statusNote, ')
           ..write('settled: $settled, ')
           ..write('settlementId: $settlementId, ')
           ..write('createdAtMs: $createdAtMs, ')
@@ -2401,6 +2439,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
     status,
     statusByUid,
     statusAtMs,
+    statusNote,
     settled,
     settlementId,
     createdAtMs,
@@ -2421,6 +2460,7 @@ class AaGroup extends DataClass implements Insertable<AaGroup> {
           other.status == this.status &&
           other.statusByUid == this.statusByUid &&
           other.statusAtMs == this.statusAtMs &&
+          other.statusNote == this.statusNote &&
           other.settled == this.settled &&
           other.settlementId == this.settlementId &&
           other.createdAtMs == this.createdAtMs &&
@@ -2439,6 +2479,7 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
   final Value<int> status;
   final Value<String?> statusByUid;
   final Value<int?> statusAtMs;
+  final Value<String?> statusNote;
   final Value<bool> settled;
   final Value<String?> settlementId;
   final Value<int> createdAtMs;
@@ -2456,6 +2497,7 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
     this.status = const Value.absent(),
     this.statusByUid = const Value.absent(),
     this.statusAtMs = const Value.absent(),
+    this.statusNote = const Value.absent(),
     this.settled = const Value.absent(),
     this.settlementId = const Value.absent(),
     this.createdAtMs = const Value.absent(),
@@ -2474,6 +2516,7 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
     this.status = const Value.absent(),
     this.statusByUid = const Value.absent(),
     this.statusAtMs = const Value.absent(),
+    this.statusNote = const Value.absent(),
     this.settled = const Value.absent(),
     this.settlementId = const Value.absent(),
     required int createdAtMs,
@@ -2498,6 +2541,7 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
     Expression<int>? status,
     Expression<String>? statusByUid,
     Expression<int>? statusAtMs,
+    Expression<String>? statusNote,
     Expression<bool>? settled,
     Expression<String>? settlementId,
     Expression<int>? createdAtMs,
@@ -2516,6 +2560,7 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
       if (status != null) 'status': status,
       if (statusByUid != null) 'status_by_uid': statusByUid,
       if (statusAtMs != null) 'status_at_ms': statusAtMs,
+      if (statusNote != null) 'status_note': statusNote,
       if (settled != null) 'settled': settled,
       if (settlementId != null) 'settlement_id': settlementId,
       if (createdAtMs != null) 'created_at_ms': createdAtMs,
@@ -2536,6 +2581,7 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
     Value<int>? status,
     Value<String?>? statusByUid,
     Value<int?>? statusAtMs,
+    Value<String?>? statusNote,
     Value<bool>? settled,
     Value<String?>? settlementId,
     Value<int>? createdAtMs,
@@ -2554,6 +2600,7 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
       status: status ?? this.status,
       statusByUid: statusByUid ?? this.statusByUid,
       statusAtMs: statusAtMs ?? this.statusAtMs,
+      statusNote: statusNote ?? this.statusNote,
       settled: settled ?? this.settled,
       settlementId: settlementId ?? this.settlementId,
       createdAtMs: createdAtMs ?? this.createdAtMs,
@@ -2598,6 +2645,9 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
     if (statusAtMs.present) {
       map['status_at_ms'] = Variable<int>(statusAtMs.value);
     }
+    if (statusNote.present) {
+      map['status_note'] = Variable<String>(statusNote.value);
+    }
     if (settled.present) {
       map['settled'] = Variable<bool>(settled.value);
     }
@@ -2630,6 +2680,7 @@ class AaGroupsCompanion extends UpdateCompanion<AaGroup> {
           ..write('status: $status, ')
           ..write('statusByUid: $statusByUid, ')
           ..write('statusAtMs: $statusAtMs, ')
+          ..write('statusNote: $statusNote, ')
           ..write('settled: $settled, ')
           ..write('settlementId: $settlementId, ')
           ..write('createdAtMs: $createdAtMs, ')
@@ -4220,6 +4271,7 @@ typedef $$AaGroupsTableCreateCompanionBuilder = AaGroupsCompanion Function({
   Value<int> status,
   Value<String?> statusByUid,
   Value<int?> statusAtMs,
+  Value<String?> statusNote,
   Value<bool> settled,
   Value<String?> settlementId,
   required int createdAtMs,
@@ -4238,6 +4290,7 @@ typedef $$AaGroupsTableUpdateCompanionBuilder = AaGroupsCompanion Function({
   Value<int> status,
   Value<String?> statusByUid,
   Value<int?> statusAtMs,
+  Value<String?> statusNote,
   Value<bool> settled,
   Value<String?> settlementId,
   Value<int> createdAtMs,
@@ -4306,6 +4359,11 @@ class $$AaGroupsTableFilterComposer
 
   ColumnFilters<int> get statusAtMs => $composableBuilder(
     column: $table.statusAtMs,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get statusNote => $composableBuilder(
+    column: $table.statusNote,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -4394,6 +4452,11 @@ class $$AaGroupsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get statusNote => $composableBuilder(
+    column: $table.statusNote,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<bool> get settled => $composableBuilder(
     column: $table.settled,
     builder: (column) => ColumnOrderings(column),
@@ -4467,6 +4530,11 @@ class $$AaGroupsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get statusNote => $composableBuilder(
+    column: $table.statusNote,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<bool> get settled =>
       $composableBuilder(column: $table.settled, builder: (column) => column);
 
@@ -4525,6 +4593,7 @@ class $$AaGroupsTableTableManager
                 Value<int> status = const Value.absent(),
                 Value<String?> statusByUid = const Value.absent(),
                 Value<int?> statusAtMs = const Value.absent(),
+                Value<String?> statusNote = const Value.absent(),
                 Value<bool> settled = const Value.absent(),
                 Value<String?> settlementId = const Value.absent(),
                 Value<int> createdAtMs = const Value.absent(),
@@ -4542,6 +4611,7 @@ class $$AaGroupsTableTableManager
                 status: status,
                 statusByUid: statusByUid,
                 statusAtMs: statusAtMs,
+                statusNote: statusNote,
                 settled: settled,
                 settlementId: settlementId,
                 createdAtMs: createdAtMs,
@@ -4561,6 +4631,7 @@ class $$AaGroupsTableTableManager
                 Value<int> status = const Value.absent(),
                 Value<String?> statusByUid = const Value.absent(),
                 Value<int?> statusAtMs = const Value.absent(),
+                Value<String?> statusNote = const Value.absent(),
                 Value<bool> settled = const Value.absent(),
                 Value<String?> settlementId = const Value.absent(),
                 required int createdAtMs,
@@ -4578,6 +4649,7 @@ class $$AaGroupsTableTableManager
                 status: status,
                 statusByUid: statusByUid,
                 statusAtMs: statusAtMs,
+                statusNote: statusNote,
                 settled: settled,
                 settlementId: settlementId,
                 createdAtMs: createdAtMs,

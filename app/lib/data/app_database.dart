@@ -70,9 +70,10 @@ class AaGroups extends Table {
   TextColumn get note => text().withDefault(const Constant(''))();
   TextColumn get categoryName => text().withDefault(const Constant(''))();
   TextColumn get categoryEmoji => text().withDefault(const Constant('🤝'))();
-  IntColumn get status => integer().withDefault(const Constant(0))(); // 0待确认 1已确认 2已退回
+  IntColumn get status => integer().withDefault(const Constant(0))(); // 0待确认 1已确认 2已退回(挂起) 3已取消
   TextColumn get statusByUid => text().nullable()();
   IntColumn get statusAtMs => integer().nullable()();
+  TextColumn get statusNote => text().nullable()(); // 退回理由（可选）
   BoolColumn get settled => boolean().withDefault(const Constant(false))();
   TextColumn get settlementId => text().nullable()();
   IntColumn get createdAtMs => integer()();
@@ -116,10 +117,11 @@ LazyDatabase _openConnection() {
 @DriftDatabase(
     tables: [Accounts, Categories, Bills, AaGroups, Settlements, MetaEntries])
 class AppDatabase extends _$AppDatabase {
-  AppDatabase() : super(_openConnection());
+  /// [executor] 仅供测试注入（如 NativeDatabase.memory()），生产路径不变
+  AppDatabase({QueryExecutor? executor}) : super(executor ?? _openConnection());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -129,6 +131,8 @@ class AppDatabase extends _$AppDatabase {
             await m.createTable(settlements);
             await m.createTable(metaEntries);
             await m.addColumn(bills, bills.settlementId);
+          } else if (from == 2) {
+            await m.addColumn(aaGroups, aaGroups.statusNote);
           }
         },
         beforeOpen: (details) async {
@@ -190,6 +194,25 @@ class AppDatabase extends _$AppDatabase {
               }
             });
           }
+          // 兜底：已配对但「AA挂账」账户缺失（误删/异常）时补回，避免 AA 账单引用悬空账户
+          final paired = await getMeta('pairSecret');
+          if (paired != null) {
+            final credit = await getAccount(kAaCreditAccountId);
+            if (credit == null) {
+              await into(accounts).insert(AccountsCompanion.insert(
+                id: kAaCreditAccountId,
+                name: 'AA挂账',
+                createdAt: now,
+                emoji: const Value('🤝'),
+                type: const Value(4),
+                initBalance: const Value(0),
+                includeNetWorth: const Value(false),
+                sort: const Value(99),
+              ));
+            }
+          }
+          // 历史 AA 份额按「奇数多出的 1 分归垫付方」口径重算（幂等，仅在不一致时写库）
+          await normalizeAaShareAmounts();
         },
       );
 
@@ -303,6 +326,7 @@ class AppDatabase extends _$AppDatabase {
         initBalance: Value(initBalance),
         includeNetWorth: Value(includeNetWorth),
         sort: Value(sort),
+        createdAt: Value(DateTime.now().millisecondsSinceEpoch),
       ));
 
   Future<void> deleteAccount(String id) =>
@@ -335,17 +359,39 @@ class AppDatabase extends _$AppDatabase {
   Future<void> upsertAaGroup(AaGroupsCompanion c) =>
       into(aaGroups).insertOnConflictUpdate(c);
 
-  /// 将 cutoffMs 及之前、尚未结算的分摊组标记为已结算
+  /// 将 cutoffMs 及之前、可结算（未结算且非挂起/取消）的分摊组标记为已结算
   Future<void> markSettledUpTo(int cutoffMs, String settlementId) {
     final now = DateTime.now().millisecondsSinceEpoch;
     return (update(aaGroups)
           ..where((t) =>
-              t.settled.equals(false) & t.dateMs.isSmallerOrEqualValue(cutoffMs)))
+              t.settled.equals(false) &
+              t.status.isSmallerOrEqualValue(1) &
+              t.dateMs.isSmallerOrEqualValue(cutoffMs)))
         .write(AaGroupsCompanion(
       settled: const Value(true),
       settlementId: Value(settlementId),
       updatedAtMs: Value(now),
     ));
+  }
+
+  /// 取消 AA 标记：关联账单转普通账单（isAa/aaGroupId 清空）
+  Future<void> unlinkBillFromAaGroup(String billId) =>
+      (update(bills)..where((t) => t.id.equals(billId))).write(BillsCompanion(
+          isAa: const Value(false), aaGroupId: const Value<String?>(null)));
+
+  /// 份额口径统一：AA 关联的份额类账单（非垫付方全额账单）金额 = 总额的一半（向下取整），
+  /// 奇数总额多出的 1 分归垫付方。幂等，供 beforeOpen 修复历史数据。
+  Future<void> normalizeAaShareAmounts() async {
+    final groups = await select(aaGroups).get();
+    for (final g in groups) {
+      final share = g.totalAmount ~/ 2;
+      final linked = await billsOfAaGroup(g.id);
+      for (final b in linked) {
+        // 垫付方的全额支出账单保持全额
+        if (b.type == 0 && b.amount == g.totalAmount) continue;
+        if (b.amount != share) await updateBillAmount(b.id, share);
+      }
+    }
   }
 
   // ---------- 结算（M2） ----------
@@ -396,4 +442,76 @@ class AppDatabase extends _$AppDatabase {
       (select(accounts)..where((t) => t.id.equals(id))).getSingleOrNull();
 
   Future<List<Category>> getAllCategories() => select(categories).get();
+
+  Future<List<Bill>> getAllBills() =>
+      (select(bills)..where((t) => t.deletedAt.isNull())).get();
+
+  Future<List<Bill>> billsOfAaGroup(String groupId) => (select(bills)
+        ..where((t) => t.deletedAt.isNull() & t.aaGroupId.equals(groupId)))
+      .get();
+
+  Future<void> updateBillAmount(String billId, int amount) =>
+      (update(bills)..where((t) => t.id.equals(billId))).write(BillsCompanion(
+          amount: Value(amount),
+          updatedAt: Value(DateTime.now().millisecondsSinceEpoch)));
+
+  Future<void> updateBillAmountAndDate(
+          String billId, int amount, int dateMs) =>
+      (update(bills)..where((t) => t.id.equals(billId))).write(BillsCompanion(
+          amount: Value(amount),
+          dateMs: Value(dateMs),
+          updatedAt: Value(DateTime.now().millisecondsSinceEpoch)));
+
+  /// 已关联到 AA 分摊组的账单 id 集合（流式，供「待入账」计算）
+  Stream<Set<String>> watchLinkedAaGroupIds() => customSelect(
+        'SELECT DISTINCT aa_group_id FROM bills WHERE deleted_at IS NULL AND aa_group_id IS NOT NULL',
+        readsFrom: {bills},
+      ).watch().map((rows) => {for (final r in rows) r.read<String>('aa_group_id')});
+
+  /// 测试后门：清空所有账单与 AA 数据（保留账户/分类/配对），用于测试重置
+  Future<void> deleteAllBillsAndAa() async {
+    await (delete(bills)).go();
+    await (delete(aaGroups)).go();
+    await (delete(settlements)).go();
+  }
+
+  // ---------- 分类自定义 ----------
+
+  Future<void> upsertCategory({
+    required String id,
+    required String name,
+    required String emoji,
+    required int kind,
+    required int sort,
+    bool isPreset = false,
+    String? parentId,
+  }) =>
+      into(categories).insertOnConflictUpdate(CategoriesCompanion(
+        id: Value(id),
+        name: Value(name),
+        emoji: Value(emoji),
+        kind: Value(kind),
+        sort: Value(sort),
+        isPreset: Value(isPreset),
+        parentId: Value(parentId),
+      ));
+
+  Future<void> deleteCategory(String id) =>
+      (delete(categories)..where((t) => t.id.equals(id))).go();
+
+  Future<int> billCountOfCategory(String categoryId) async {
+    final rows = await (select(bills)
+          ..where((t) =>
+              t.deletedAt.isNull() & t.categoryId.equals(categoryId)))
+        .get();
+    return rows.length;
+  }
+
+  /// 分类排序：ids 为当前页展示顺序（拖动/置顶后落库）
+  Future<void> reorderCategories(List<String> ids) async {
+    for (var i = 0; i < ids.length; i++) {
+      await (update(categories)..where((t) => t.id.equals(ids[i])))
+          .write(CategoriesCompanion(sort: Value(i)));
+    }
+  }
 }

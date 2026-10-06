@@ -50,3 +50,7 @@ final aaGroupsProvider = StreamProvider<List<AaGroup>>(
 
 final settlementsProvider = StreamProvider<List<Settlement>>(
     (ref) => ref.watch(databaseProvider).watchSettlements());
+
+/// 已关联 AA 分摊组的账单 id 集合（判定伙伴账单是否已入账）
+final linkedAaGroupIdsProvider = StreamProvider<Set<String>>(
+    (ref) => ref.watch(databaseProvider).watchLinkedAaGroupIds());

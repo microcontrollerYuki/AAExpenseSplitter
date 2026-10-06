@@ -227,7 +227,15 @@ class _BillTileState extends ConsumerState<_BillTile> {
       title = '转账';
       subtitle = '${acc?.name ?? '?'} → ${toAcc?.name ?? '?'}';
     } else {
-      title = bill.note.isNotEmpty ? bill.note : (cat?.name ?? '未分类');
+      // AA 支出账单按设计图标为「AA平分：项目」；份额账单已带 AA 语义备注则不重复前缀
+      final baseTitle = bill.note.isNotEmpty
+          ? bill.note
+          : (cat?.name ?? '未分类');
+      title = (bill.isAa &&
+              bill.type == 0 &&
+              !baseTitle.startsWith('AA'))
+          ? 'AA平分：$baseTitle'
+          : baseTitle;
       subtitle = [if (cat != null) cat.name, acc?.name ?? '']
           .where((s) => s.isNotEmpty)
           .join(' · ');

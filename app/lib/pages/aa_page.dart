@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +11,7 @@ import '../providers.dart';
 import '../sync/aa_sync_service.dart';
 import '../theme.dart';
 import '../utils/money.dart';
+import 'edit_bill_page.dart';
 
 /// AA 共享页：配对 / 差额与结算 / 加密文件同步 / 待确认 / AA 账单列表
 class AaPage extends ConsumerWidget {
@@ -154,30 +157,167 @@ class _PairingFormState extends ConsumerState<_PairingForm> {
 
 // ---------------- 已配对仪表盘 ----------------
 
-class _Dashboard extends ConsumerWidget {
+/// 我的份额（分）：垫付方=总额-伙伴份额；接收方=伙伴份额
+int _myShare(AaGroup g, String myUid) {
+  final partnerShare = AaSyncService.shareOfNonPayer(g.totalAmount);
+  return g.payerUid == myUid ? g.totalAmount - partnerShare : partnerShare;
+}
+
+/// AA 状态文案（设计图枚举：应收/应付 → 分区承载；拒绝/待修改/删除 → 行内状态）
+String _statusText(AaGroup g, String myUid) {
+  if (g.settled) return '已结算';
+  switch (g.status) {
+    case 1:
+      return g.ownerUid == myUid ? '已确认' : '已入账';
+    case 2:
+      return g.ownerUid == myUid ? '待修改（已拒绝）' : '已拒绝';
+    case 3:
+      return '已删除';
+    default:
+      return g.ownerUid == myUid ? '待伙伴确认' : '待我入账';
+  }
+}
+
+String _fmtDate(int ms) {
+  final d = DateTime.fromMillisecondsSinceEpoch(ms);
+  return '${d.month}-${d.day.toString().padLeft(2, '0')}';
+}
+
+/// AA 账单分区（应收/应付/已同步）：默认折叠到 8 条，过长时按钮展开
+class _GroupsSection extends StatefulWidget {
+  const _GroupsSection({
+    required this.title,
+    required this.groups,
+    required this.myUid,
+    required this.accent,
+  });
+
+  final String title;
+  final List<AaGroup> groups;
+  final String myUid;
+  final Color accent;
+
+  @override
+  State<_GroupsSection> createState() => _GroupsSectionState();
+}
+
+class _GroupsSectionState extends State<_GroupsSection> {
+  static const _collapseTo = 8;
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final g = widget.groups;
+    if (g.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(14, 4, 14, 4),
+        child: Text('${widget.title}：暂无',
+            style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      );
+    }
+    final shown = _expanded || g.length <= _collapseTo
+        ? g
+        : g.sublist(0, _collapseTo);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+          child: Text('${widget.title}（${g.length}）',
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: widget.accent)),
+        ),
+        for (final item in shown)
+          ListTile(
+            dense: true,
+            leading:
+                Text(item.categoryEmoji, style: const TextStyle(fontSize: 20)),
+            title: Text(
+              '${item.payerUid == widget.myUid ? '我垫付' : '伙伴垫付'} · ${item.categoryName}'
+              '${item.note.isEmpty ? '' : ' · ${item.note}'}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 14),
+            ),
+            subtitle: Text(
+              '${_fmtDate(item.dateMs)} · 总额 ¥ ${centsToText(item.totalAmount)} · ${_statusText(item, widget.myUid)}',
+              style: const TextStyle(fontSize: 12),
+            ),
+            trailing: Text(
+              '¥ ${centsToText(_myShare(item, widget.myUid))}',
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: item.payerUid == widget.myUid
+                      ? kPrimaryColor
+                      : kExpenseColor),
+            ),
+          ),
+        if (g.length > _collapseTo)
+          Align(
+            alignment: Alignment.center,
+            child: TextButton(
+              onPressed: () => setState(() => _expanded = !_expanded),
+              child: Text(_expanded
+                  ? '收起'
+                  : '展开全部 ${g.length} 条（账单较多，已折叠）'),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _Dashboard extends ConsumerStatefulWidget {
   const _Dashboard({required this.meta});
 
   final Map<String, String> meta;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final myUid = meta['myUid'] ?? '';
-    final partnerName = meta['partnerName'] ?? '伙伴';
+  ConsumerState<_Dashboard> createState() => _DashboardState();
+}
+
+class _DashboardState extends ConsumerState<_Dashboard> {
+  /// 批量确认模式（长按待入账行进入）
+  bool _batchMode = false;
+  final Set<String> _selected = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final myUid = widget.meta['myUid'] ?? '';
+    final partnerName = widget.meta['partnerName'] ?? '伙伴';
     final groups = ref.watch(aaGroupsProvider).value ?? const <AaGroup>[];
     final settlements =
         ref.watch(settlementsProvider).value ?? const <Settlement>[];
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
 
+    final linkedIds =
+        ref.watch(linkedAaGroupIdsProvider).value ?? const <String>{};
     var net = 0;
     var unsettled = 0;
     for (final g in groups) {
-      if (g.settled) continue;
+      if (!AaSyncService.countsTowardBalance(g)) continue;
       unsettled++;
       final share = AaSyncService.shareOfNonPayer(g.totalAmount);
       net += g.payerUid == myUid ? share : -share;
     }
     final pendingMine = groups
-        .where((g) => g.ownerUid != myUid && g.status == 0 && !g.settled)
+        .where((g) =>
+            g.ownerUid != myUid &&
+            g.status == 0 &&
+            !g.settled &&
+            !linkedIds.contains(g.id))
+        .toList();
+    // 退出批量模式时清空选择；没有待入账项时自动退出
+    if (pendingMine.isEmpty && _batchMode) {
+      _batchMode = false;
+      _selected.clear();
+    }
+    // 发起方待处理：被伙伴退回的 AA 账单（挂起不计差额，等发起方决定，§4.3）
+    final returnedMine = groups
+        .where((g) => g.ownerUid == myUid && g.status == 2 && !g.settled)
         .toList();
 
     return ListView(
@@ -190,8 +330,12 @@ class _Dashboard extends ConsumerWidget {
           const SizedBox(height: 12),
           _pendingCard(context, ref, pendingMine),
         ],
+        if (returnedMine.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _returnedCard(context, ref, returnedMine),
+        ],
         const SizedBox(height: 12),
-        _groupsCard(groups, myUid),
+        _groupsCard([for (final g in groups) if (g.status != 3) g], myUid),
         if (settlements.isNotEmpty) ...[
           const SizedBox(height: 12),
           _settlementsCard(settlements, myUid),
@@ -282,7 +426,7 @@ class _Dashboard extends ConsumerWidget {
                     fontSize: 16, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 4),
-              const Text('确认后将核销全部未结算 AA 账单，并在账本生成挂账核销转账。',
+              const Text('确认后将核销全部未结算 AA 账单（退回挂起/已取消的除外），并在账本生成挂账核销转账。',
                   style: TextStyle(fontSize: 12, color: Colors.grey)),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
@@ -351,11 +495,11 @@ class _Dashboard extends ConsumerWidget {
             const SizedBox(height: 8),
             Row(children: [
               Expanded(
-                  child: Text('上次导出：${meta['lastExportAt'] ?? '—'}',
+                  child: Text('上次导出：${widget.meta['lastExportAt'] ?? '—'}',
                       style:
                           const TextStyle(fontSize: 12, color: Colors.grey))),
               Expanded(
-                  child: Text('上次导入：${meta['lastImportAt'] ?? '—'}',
+                  child: Text('上次导入：${widget.meta['lastImportAt'] ?? '—'}',
                       textAlign: TextAlign.end,
                       style:
                           const TextStyle(fontSize: 12, color: Colors.grey))),
@@ -392,17 +536,67 @@ class _Dashboard extends ConsumerWidget {
   }
 
   Future<void> _export(BuildContext context, WidgetRef ref) async {
+    String path;
     try {
-      final path =
-          await ref.read(aaSyncServiceProvider).exportSyncFile();
-      if (!context.mounted) return;
-      await SharePlus.instance.share(ShareParams(
-        files: [XFile(path)],
-        text: 'AA记账同步文件，请在 AA 页导入',
-      ));
+      path = await ref.read(aaSyncServiceProvider).exportSyncFile();
     } catch (e) {
       if (context.mounted) AaPage.showSnack(context, '导出失败：$e');
+      return;
     }
+    if (!context.mounted) return;
+    final fileName =
+        path.split(Platform.pathSeparator).last; // e.g. aasync_1005_1710.aas
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('导出同步文件',
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.w600))),
+            ListTile(
+              leading: const Icon(Icons.share_outlined),
+              title: const Text('系统分享（微信/QQ 发送）'),
+              subtitle: const Text('手机上推荐，直接发给伙伴'),
+              onTap: () => Navigator.pop(sctx, 'share'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.save_alt),
+              title: const Text('保存到指定位置'),
+              subtitle: const Text('存到「下载」等公共目录，模拟器或无微信时用'),
+              onTap: () => Navigator.pop(sctx, 'save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !context.mounted) return;
+
+    if (choice == 'save') {
+      try {
+        final saved = await FilePicker.saveFile(
+          fileName: fileName,
+          bytes: await File(path).readAsBytes(),
+          dialogTitle: '保存同步文件',
+        );
+        if (context.mounted) {
+          AaPage.showSnack(
+              context, saved == null ? '已取消保存' : '已保存：$saved');
+        }
+      } catch (e) {
+        if (context.mounted) AaPage.showSnack(context, '保存失败：$e');
+      }
+      return;
+    }
+
+    await SharePlus.instance.share(ShareParams(
+      files: [XFile(path)],
+      text: 'AA记账同步文件，请在 AA 页导入',
+    ));
   }
 
   Future<void> _import(BuildContext context, WidgetRef ref) async {
@@ -413,14 +607,17 @@ class _Dashboard extends ConsumerWidget {
       final msg =
           await ref.read(aaSyncServiceProvider).importSyncFile(path);
       if (context.mounted) AaPage.showSnack(context, msg);
-    } catch (_) {
+      // 导入后如有待入账的伙伴账单，依次弹出选账户/分类/备注
+      if (context.mounted) await _openPendingSheets(context, ref);
+    } catch (e) {
+      debugPrint('[AASync] import error: $e');
       if (context.mounted) {
-        AaPage.showSnack(context, '导入失败：口令不一致或文件损坏');
+        AaPage.showSnack(context, '导入失败：$e');
       }
     }
   }
 
-  // ---- 待确认 ----
+  // ---- 待入账（伙伴的 AA 账单；点行逐笔选账户/分类/备注，长按进批量模式） ----
 
   Widget _pendingCard(
       BuildContext context, WidgetRef ref, List<AaGroup> pending) {
@@ -431,58 +628,243 @@ class _Dashboard extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('待你确认（${pending.length}）',
-                style: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w600)),
+            Row(children: [
+              Expanded(
+                child: Text(_batchMode ? '批量确认（已选 ${_selected.length}/${pending.length}）' : '待你入账（${pending.length}）',
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600)),
+              ),
+              if (_batchMode)
+                TextButton(
+                  onPressed: () => setState(() {
+                    _batchMode = false;
+                    _selected.clear();
+                  }),
+                  child: const Text('退出批量'),
+                ),
+            ]),
+            if (!_batchMode)
+              const Text('点行逐笔入账（可选账户/分类/备注）；长按任意一行进入批量确认',
+                  style: TextStyle(fontSize: 11, color: Colors.grey)),
             for (final g in pending)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: Row(
                   children: [
+                    if (_batchMode)
+                      Checkbox(
+                        value: _selected.contains(g.id),
+                        onChanged: (v) => setState(() =>
+                            v == true ? _selected.add(g.id) : _selected.remove(g.id)),
+                      ),
                     Text(g.categoryEmoji, style: const TextStyle(fontSize: 20)),
                     const SizedBox(width: 10),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            '${g.categoryName}${g.note.isEmpty ? '' : ' · ${g.note}'}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 14),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '总额 ¥ ${centsToText(g.totalAmount)} · 你的份额 ¥ ${centsToText(AaSyncService.shareOfNonPayer(g.totalAmount))}',
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.grey),
-                          ),
-                        ],
+                      child: GestureDetector(
+                        onTap: () {
+                          if (_batchMode) {
+                            setState(() => _selected.contains(g.id)
+                                ? _selected.remove(g.id)
+                                : _selected.add(g.id));
+                          } else {
+                            _openSheet(context, ref, g);
+                          }
+                        },
+                        onLongPress: () => setState(() {
+                          _batchMode = true;
+                          _selected.add(g.id);
+                        }),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${g.categoryName}${g.note.isEmpty ? '' : ' · ${g.note}'}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 14,
+                                  decoration: _batchMode
+                                      ? TextDecoration.none
+                                      : TextDecoration.underline,
+                                  color: kPrimaryColor),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '总额 ¥ ${centsToText(g.totalAmount)} · 我的份额 ¥ ${centsToText(AaSyncService.shareOfNonPayer(g.totalAmount))}',
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                    TextButton(
-                      onPressed: () async {
-                        await ref
-                            .read(aaSyncServiceProvider)
-                            .setGroupStatus(g.id, 1);
-                        if (context.mounted) {
-                          AaPage.showSnack(context, '已确认，记得导出同步文件');
-                        }
-                      },
-                      child: const Text('确认'),
+                    if (!_batchMode)
+                      TextButton(
+                        style: TextButton.styleFrom(
+                            foregroundColor: kExpenseColor),
+                        onPressed: () async {
+                          final reason = await askReturnReason(context);
+                          if (reason == null) return; // 取消
+                          await ref
+                              .read(aaSyncServiceProvider)
+                              .setGroupStatus(g.id, 2, reason: reason);
+                          if (context.mounted) {
+                            AaPage.showSnack(context, '已退回，等待伙伴处理');
+                          }
+                        },
+                        child: const Text('退回'),
+                      ),
+                  ],
+                ),
+              ),
+            if (_batchMode)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, bottom: 6),
+                child: Row(children: [
+                  TextButton(
+                    onPressed: () => setState(
+                        () => _selected.length == pending.length
+                            ? _selected.clear()
+                            : _selected.addAll(pending.map((g) => g.id))),
+                    child: Text(_selected.length == pending.length
+                        ? '取消全选'
+                        : '全选'),
+                  ),
+                  Expanded(
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: kPrimaryColor),
+                      onPressed: _selected.isEmpty
+                          ? null
+                          : () async {
+                              final picked = pending
+                                  .where((g) => _selected.contains(g.id))
+                                  .toList();
+                              final categories = ref.read(categoriesProvider)
+                                      .value ??
+                                  const <Category>[];
+                              await ref
+                                  .read(aaSyncServiceProvider)
+                                  .adoptShareBillsDefault(picked, categories);
+                              if (!mounted || !context.mounted) return;
+                              setState(() {
+                                _batchMode = false;
+                                _selected.clear();
+                              });
+                              AaPage.showSnack(
+                                  context, '已按默认模板批量入账 ${picked.length} 笔');
+                            },
+                      child: const Text('批量入账（默认模板）'),
                     ),
-                    TextButton(
-                      style: TextButton.styleFrom(
-                          foregroundColor: kExpenseColor),
-                      onPressed: () async {
-                        await ref
-                            .read(aaSyncServiceProvider)
-                            .setGroupStatus(g.id, 2);
-                        if (context.mounted) {
-                          AaPage.showSnack(context, '已退回，等待伙伴处理');
-                        }
-                      },
-                      child: const Text('退回'),
+                  ),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                        foregroundColor: kExpenseColor),
+                    onPressed: _selected.isEmpty
+                        ? null
+                        : () async {
+                            final service =
+                                ref.read(aaSyncServiceProvider);
+                            for (final g in pending) {
+                              if (_selected.contains(g.id)) {
+                                await service.setGroupStatus(g.id, 2);
+                              }
+                            }
+                            if (!mounted || !context.mounted) return;
+                            setState(() {
+                              _batchMode = false;
+                              _selected.clear();
+                            });
+                            AaPage.showSnack(context, '已批量退回');
+                          },
+                    child: const Text('批量退回'),
+                  ),
+                ]),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ---- 待处理（伙伴退回的 AA 账单，发起方决定后续，§4.3） ----
+
+  Widget _returnedCard(
+      BuildContext context, WidgetRef ref, List<AaGroup> returned) {
+    final myUid = widget.meta['myUid'] ?? '';
+    final bills = ref.watch(allBillsProvider).value ?? const <Bill>[];
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('待你处理（${returned.length}）',
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.w600)),
+            const Text('伙伴已退回，暂不计入差额。可改金额重发（需再确认）、取消 AA 或删除。',
+                style: TextStyle(fontSize: 11, color: Colors.grey)),
+            for (final g in returned)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Text(g.categoryEmoji,
+                          style: const TextStyle(fontSize: 20)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${g.categoryName}${g.note.isEmpty ? '' : ' · ${g.note}'}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 14),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '${_fmtDate(g.dateMs)} · 总额 ¥ ${centsToText(g.totalAmount)} · 我的份额 ¥ ${centsToText(_myShare(g, myUid))}',
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.grey),
+                            ),
+                            if ((g.statusNote ?? '').isNotEmpty) ...[
+                              const SizedBox(height: 2),
+                              Text('退回理由：${g.statusNote}',
+                                  style: const TextStyle(
+                                      fontSize: 12, color: kExpenseColor)),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 2),
+                    Wrap(
+                      spacing: 4,
+                      children: [
+                        TextButton.icon(
+                          icon: const Icon(Icons.edit_outlined, size: 16),
+                          label: const Text('改金额重发'),
+                          onPressed: () => _reissue(context, ref, g, bills),
+                        ),
+                        TextButton.icon(
+                          icon: const Icon(Icons.link_off, size: 16),
+                          label: const Text('取消 AA'),
+                          onPressed: () => _cancelAa(
+                              context, ref, g, deleteOwnerBill: false),
+                        ),
+                        TextButton.icon(
+                          style: TextButton.styleFrom(
+                              foregroundColor: kExpenseColor),
+                          icon: const Icon(Icons.delete_outline, size: 16),
+                          label: const Text('删除'),
+                          onPressed: () => _cancelAa(
+                              context, ref, g, deleteOwnerBill: true),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -493,9 +875,104 @@ class _Dashboard extends ConsumerWidget {
     );
   }
 
+  /// 改金额重发（§4.3 ①）：打开垫付方全额账单的编辑页，保存后状态回「待伙伴确认」
+  void _reissue(
+      BuildContext context, WidgetRef ref, AaGroup g, List<Bill> bills) {
+    Bill? full;
+    for (final b in bills) {
+      if (b.aaGroupId == g.id && b.type == 0 && b.amount == g.totalAmount) {
+        full = b;
+        break;
+      }
+    }
+    if (full == null) {
+      AaPage.showSnack(context, '未找到对应的垫付账单，无法重发');
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => EditBillPage(bill: full)),
+    );
+  }
+
+  /// 取消 AA / 删除（§4.3 ②③）：分摊组置「已取消」同步给伙伴，对方份额账单作废
+  Future<void> _cancelAa(BuildContext context, WidgetRef ref, AaGroup g,
+      {required bool deleteOwnerBill}) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(deleteOwnerBill ? '删除 AA 账单' : '取消 AA'),
+        content: Text(deleteOwnerBill
+            ? '删除后这笔 AA 账单（含垫付账单）将在双方账本同步作废，确定删除吗？'
+            : '取消后垫付账单转为普通账单（不再是 AA），伙伴的份额账单同步作废，确定取消吗？'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(deleteOwnerBill ? '删除' : '取消 AA')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await ref.read(aaSyncServiceProvider).cancelAaGroup(
+          groupId: g.id,
+          deleteOwnerBill: deleteOwnerBill,
+        );
+    if (context.mounted) {
+      AaPage.showSnack(context,
+          deleteOwnerBill ? '已删除，请导出同步文件通知伙伴' : '已取消 AA，请导出同步文件通知伙伴');
+    }
+  }
+
+  Future<String?> _openSheet(
+      BuildContext context, WidgetRef ref, AaGroup g) {
+    if (!context.mounted) return Future.value();
+    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    final categories =
+        ref.read(categoriesProvider).value ?? const <Category>[];
+    return showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => AaShareSheet(
+        group: g,
+        service: ref.read(aaSyncServiceProvider),
+        accounts: accounts,
+        categories: categories,
+        defaultCategoryId:
+            AaSyncService.guessCategoryForName(g.categoryName, categories),
+      ),
+    );
+  }
+
+  /// 依次处理所有待入账的伙伴账单（用户中断即停，剩余留在 AA 页）
+  Future<void> _openPendingSheets(BuildContext context, WidgetRef ref) async {
+    final pending =
+        await ref.read(aaSyncServiceProvider).pendingShareGroups();
+    if (pending.isEmpty || !context.mounted) return;
+    final res = await _openSheet(context, ref, pending.first);
+    if (res == null || !context.mounted) return;
+    await _openPendingSheets(context, ref);
+  }
+
   // ---- AA 账单列表 ----
 
+  /// AA 账单三分区（设计图）：应收（我垫付未结算）/ 应付（伙伴垫付未结算）/ 已同步（完成）。
+  /// 每区默认折叠到 8 条，账单过多时按需展开。
   Widget _groupsCard(List<AaGroup> groups, String myUid) {
+    final active = [
+      for (final g in groups)
+        if (!g.settled && g.status != 3) g
+    ];
+    final receivable = [
+      for (final g in active)
+        if (g.payerUid == myUid) g
+    ];
+    final payable = [
+      for (final g in active)
+        if (g.payerUid != myUid) g
+    ];
+    final synced = [for (final g in groups) if (g.settled) g];
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -505,74 +982,32 @@ class _Dashboard extends ConsumerWidget {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 10, 14, 2),
-              child: Text('AA 账单（${groups.length}）',
+              child: Text('AA 账单',
                   style: const TextStyle(
                       fontSize: 15, fontWeight: FontWeight.w600)),
             ),
-            if (groups.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(20),
-                child: Center(
-                    child: Text('还没有 AA 账单，记账时打开「AA」开关试试',
-                        style: TextStyle(color: Colors.grey, fontSize: 13))),
-              )
-            else
-              for (final g in groups)
-                ListTile(
-                  dense: true,
-                  leading:
-                      Text(g.categoryEmoji, style: const TextStyle(fontSize: 20)),
-                  title: Text(
-                    '${g.payerUid == myUid ? '我垫付' : '伙伴垫付'} · ${g.categoryName}'
-                    '${g.note.isEmpty ? '' : ' · ${g.note}'}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 14),
-                  ),
-                  subtitle: Text(
-                    '${_fmtDate(g.dateMs)} · 总额 ¥ ${centsToText(g.totalAmount)} · ${_statusText(g, myUid)}',
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  trailing: Text(
-                    '¥ ${centsToText(_myShare(g, myUid))}',
-                    style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: g.payerUid == myUid
-                            ? kPrimaryColor
-                            : kExpenseColor),
-                  ),
-                ),
+            _GroupsSection(
+                title: '应收账单（我垫付 · 未结算）',
+                groups: receivable,
+                myUid: myUid,
+                accent: kPrimaryColor),
+            _GroupsSection(
+                title: '应付账单（伙伴垫付 · 未结算）',
+                groups: payable,
+                myUid: myUid,
+                accent: kExpenseColor),
+            _GroupsSection(
+                title: '已同步（完成）',
+                groups: synced,
+                myUid: myUid,
+                accent: Colors.black54),
           ],
         ),
       ),
     );
   }
 
-  int _myShare(AaGroup g, String myUid) {
-    final partnerShare = AaSyncService.shareOfNonPayer(g.totalAmount);
-    return g.payerUid == myUid ? g.totalAmount - partnerShare : partnerShare;
-  }
-
-  String _statusText(AaGroup g, String myUid) {
-    if (g.settled) return '已结算';
-    switch (g.status) {
-      case 1:
-        return '已确认';
-      case 2:
-        return '已退回';
-      default:
-        return g.ownerUid == myUid ? '待伙伴确认' : '待我确认';
-    }
-  }
-
-  String _fmtDate(int ms) {
-    final d = DateTime.fromMillisecondsSinceEpoch(ms);
-    return '${d.month}-${d.day.toString().padLeft(2, '0')}';
-  }
-
   // ---- 结算记录 ----
-
   Widget _settlementsCard(List<Settlement> settlements, String myUid) {
     return Card(
       margin: EdgeInsets.zero,
@@ -652,6 +1087,305 @@ class _Dashboard extends ConsumerWidget {
             }
           }
         },
+      ),
+    );
+  }
+}
+
+/// 退回 AA 账单前询问理由（可留空）：返回 null=取消，'' 或文本=确认退回
+Future<String?> askReturnReason(BuildContext context) {
+  final ctl = TextEditingController();
+  return showDialog<String>(
+    context: context,
+    builder: (dctx) => AlertDialog(
+      title: const Text('退回 AA 账单'),
+      content: TextField(
+        controller: ctl,
+        maxLength: 40,
+        decoration: const InputDecoration(
+          labelText: '退回理由（可选）',
+          hintText: '例如：这笔应该按 60/40 分',
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(dctx),
+            child: const Text('取消')),
+        FilledButton(
+            onPressed: () => Navigator.pop(dctx, ctl.text.trim()),
+            child: const Text('退回')),
+      ],
+    ),
+  );
+}
+
+/// AA 份额入账面板：接收方选择自己的账户/分类/备注（带默认模板）
+/// 默认模板：账户=AA挂账、分类=按伙伴分类名匹配、备注=「AA · 原备注」
+/// 返回值：'adopt' 已入账并确认 / 'return' 已退回 / null 取消
+class AaShareSheet extends StatefulWidget {
+  const AaShareSheet({
+    super.key,
+    required this.group,
+    required this.service,
+    required this.accounts,
+    required this.categories,
+    this.defaultCategoryId,
+  });
+
+  final AaGroup group;
+  final AaSyncService service;
+  final List<Account> accounts;
+  final List<Category> categories;
+  final String? defaultCategoryId;
+
+  @override
+  State<AaShareSheet> createState() => _AaShareSheetState();
+}
+
+class _AaShareSheetState extends State<AaShareSheet> {
+  late final TextEditingController _noteCtl;
+  late String? _accountId;
+  late String? _categoryId;
+
+  @override
+  void initState() {
+    super.initState();
+    final g = widget.group;
+    _noteCtl = TextEditingController(
+        text: g.note.isEmpty ? 'AA · 伙伴垫付' : 'AA · ${g.note}');
+    _accountId = kAaCreditAccountId;
+    _categoryId = widget.defaultCategoryId;
+  }
+
+  @override
+  void dispose() {
+    _noteCtl.dispose();
+    super.dispose();
+  }
+
+  Account? get _accObj {
+    for (final a in widget.accounts) {
+      if (a.id == _accountId) return a;
+    }
+    return null;
+  }
+
+  Category? get _catObj {
+    for (final c in widget.categories) {
+      if (c.id == _categoryId) return c;
+    }
+    return null;
+  }
+
+  Future<void> _adopt() async {
+    final accId = _accountId ??
+        (widget.accounts.isNotEmpty ? widget.accounts.first.id : '');
+    if (accId.isEmpty) {
+      Navigator.pop(context, null);
+      return;
+    }
+    await widget.service.adoptShareBill(
+      group: widget.group,
+      accountId: accId,
+      categoryId: _categoryId,
+      note: _noteCtl.text.trim(),
+    );
+    if (mounted) Navigator.pop(context, 'adopt');
+  }
+
+  Future<void> _returnBill() async {
+    final reason = await askReturnReason(context);
+    if (reason == null) return; // 取消
+    await widget.service.setGroupStatus(widget.group.id, 2, reason: reason);
+    if (mounted) Navigator.pop(context, 'return');
+  }
+
+  Future<void> _pickAccount() async {
+    final id = await showModalBottomSheet<String>(
+      context: context,
+      builder: (bctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('选择账户',
+                    style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600))),
+            for (final a in widget.accounts)
+              ListTile(
+                leading: Text(a.emoji, style: const TextStyle(fontSize: 22)),
+                title: Text(a.name),
+                onTap: () => Navigator.pop(bctx, a.id),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (id != null) setState(() => _accountId = id);
+  }
+
+  Future<void> _pickCategory() async {
+    final cats =
+        widget.categories.where((c) => c.kind == 0).toList();
+    final id = await showModalBottomSheet<String>(
+      context: context,
+      builder: (bctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('选择分类',
+                    style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600))),
+            SizedBox(
+              height: 200,
+              child: GridView.count(
+                crossAxisCount: 5,
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                childAspectRatio: 0.95,
+                children: [
+                  for (final c in cats)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => Navigator.pop(bctx, c.id),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          CircleAvatar(
+                            radius: 22,
+                            backgroundColor: c.id == _categoryId
+                                ? kPrimaryColor.withValues(alpha: 0.15)
+                                : Colors.grey.shade100,
+                            child: Text(c.emoji,
+                                style: const TextStyle(fontSize: 21)),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(c.name,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: c.id == _categoryId
+                                      ? kPrimaryColor
+                                      : Colors.black87)),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (id != null) setState(() => _categoryId = id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final g = widget.group;
+    final acc = _accObj;
+    final cat = _catObj;
+    final share = AaSyncService.shareOfNonPayer(g.totalAmount);
+    final d = DateTime.fromMillisecondsSinceEpoch(g.dateMs);
+    String two(int v) => v.toString().padLeft(2, '0');
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 16, 16,
+            16 + MediaQuery.of(context).viewInsets.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('AA 账单入账',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 8),
+            Text(
+              '${g.categoryEmoji} ${g.categoryName} · ${d.month}月${d.day}日 ${two(d.hour)}:${two(d.minute)} · 伙伴垫付',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Text('我的份额  ',
+                    style: TextStyle(fontSize: 14, color: Colors.grey)),
+                Text('¥ ${centsToText(share)}',
+                    style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: kExpenseColor)),
+                const Spacer(),
+                const Text('总额 ¥ '),
+                Text(centsToText(g.totalAmount),
+                    style: const TextStyle(
+                        fontSize: 13, decoration: TextDecoration.underline)),
+              ],
+            ),
+            const Divider(height: 20),
+            TextField(
+              controller: _noteCtl,
+              style: const TextStyle(fontSize: 14),
+              decoration: const InputDecoration(
+                hintText: '备注（可修改）',
+                prefixIcon: Icon(Icons.edit_note, size: 20),
+                isDense: true,
+              ),
+            ),
+            _row(Icons.account_balance_wallet, '账户',
+                acc == null ? '选择账户' : '${acc.emoji} ${acc.name}', _pickAccount),
+            _row(Icons.category, '分类',
+                cat == null ? '选择分类' : '${cat.emoji} ${cat.name}', _pickCategory),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                TextButton(
+                  style:
+                      TextButton.styleFrom(foregroundColor: kExpenseColor),
+                  onPressed: _returnBill,
+                  child: const Text('退回'),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton(
+                    style:
+                        FilledButton.styleFrom(backgroundColor: kPrimaryColor),
+                    onPressed: _adopt,
+                    child: const Text('入账并确认'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _row(IconData icon, String label, String value, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: Colors.grey),
+            const SizedBox(width: 8),
+            Text(label,
+                style: const TextStyle(fontSize: 13, color: Colors.grey)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w600)),
+            ),
+            const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
+          ],
+        ),
       ),
     );
   }

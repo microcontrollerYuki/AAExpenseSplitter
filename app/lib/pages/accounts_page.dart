@@ -160,23 +160,30 @@ class _AccountDialogState extends State<_AccountDialog> {
   }
 
   Future<void> _save() async {
-    final name = _nameCtl.text.trim();
-    if (name.isEmpty) {
-      _snack('请填写账户名称');
-      return;
+    try {
+      debugPrint('[AccountDialog] save pressed, name=${_nameCtl.text}');
+      final name = _nameCtl.text.trim();
+      if (name.isEmpty) {
+        _snack('请填写账户名称');
+        return;
+      }
+      final id =
+          widget.account?.id ?? 'acc_${const Uuid().v4().substring(0, 8)}';
+      await widget.db.upsertAccount(
+        id: id,
+        name: name,
+        emoji: _emoji,
+        type: widget.account?.type ?? 3,
+        initBalance: parseMoneyToCents(_balanceCtl.text),
+        includeNetWorth: _include,
+        sort: widget.account?.sort ?? widget.newSort,
+      );
+      debugPrint('[AccountDialog] saved ok, closing');
+      if (mounted) Navigator.of(context).pop();
+    } catch (e) {
+      debugPrint('[AccountDialog] save error: $e');
+      if (mounted) _snack('保存失败：$e');
     }
-    final id =
-        widget.account?.id ?? 'acc_${const Uuid().v4().substring(0, 8)}';
-    await widget.db.upsertAccount(
-      id: id,
-      name: name,
-      emoji: _emoji,
-      type: widget.account?.type ?? 3,
-      initBalance: parseMoneyToCents(_balanceCtl.text),
-      includeNetWorth: _include,
-      sort: widget.account?.sort ?? widget.newSort,
-    );
-    if (mounted) Navigator.of(context).pop();
   }
 
   Future<void> _delete() async {
@@ -193,74 +200,71 @@ class _AccountDialogState extends State<_AccountDialog> {
 
   @override
   Widget build(BuildContext context) {
-    // 键盘避让：弹窗随键盘抬起，期初余额输入框不会被遮挡
-    return Padding(
-      padding:
-          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-      child: AlertDialog(
-        title: Text(widget.account == null ? '添加账户' : '编辑账户'),
-        content: SizedBox(
-          width: 340,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: _nameCtl,
-                  decoration: const InputDecoration(labelText: '名称'),
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    for (final e in kAccountEmojiChoices)
-                      GestureDetector(
-                        onTap: () => setState(() => _emoji = e),
-                        child: CircleAvatar(
-                          radius: 18,
-                          backgroundColor: _emoji == e
-                              ? kPrimaryColor.withValues(alpha: 0.18)
-                              : Colors.grey.shade100,
-                          child:
-                              Text(e, style: const TextStyle(fontSize: 18)),
-                        ),
+    // 键盘避让由 AlertDialog 内置的 AnimatedPadding(viewInsets) 处理，
+    // 不要在外层再包一层避让（双倍内边距会把弹窗顶飞且布局震荡）
+    return AlertDialog(
+      title: Text(widget.account == null ? '添加账户' : '编辑账户'),
+      content: SizedBox(
+        width: 340,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: _nameCtl,
+                decoration: const InputDecoration(labelText: '名称'),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final e in kAccountEmojiChoices)
+                    GestureDetector(
+                      onTap: () => setState(() => _emoji = e),
+                      child: CircleAvatar(
+                        radius: 18,
+                        backgroundColor: _emoji == e
+                            ? kPrimaryColor.withValues(alpha: 0.18)
+                            : Colors.grey.shade100,
+                        child:
+                            Text(e, style: const TextStyle(fontSize: 18)),
                       ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _balanceCtl,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  inputFormatters: [_MoneyInputFormatter()],
-                  decoration:
-                      const InputDecoration(labelText: '期初余额（元）'),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('计入总资产'),
-                  value: _include,
-                  onChanged: (v) => setState(() => _include = v),
-                ),
-              ],
-            ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _balanceCtl,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [_MoneyInputFormatter()],
+                decoration:
+                    const InputDecoration(labelText: '期初余额（元）'),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('计入总资产'),
+                value: _include,
+                onChanged: (v) => setState(() => _include = v),
+              ),
+            ],
           ),
         ),
-        actions: [
-          if (widget.account != null)
-            TextButton(
-              onPressed: _delete,
-              child:
-                  const Text('删除', style: TextStyle(color: kExpenseColor)),
-            ),
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('取消')),
-          FilledButton(onPressed: _save, child: const Text('保存')),
-        ],
       ),
+      actions: [
+        if (widget.account != null)
+          TextButton(
+            onPressed: _delete,
+            child:
+                const Text('删除', style: TextStyle(color: kExpenseColor)),
+          ),
+        TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消')),
+        FilledButton(onPressed: _save, child: const Text('保存')),
+      ],
     );
   }
 }

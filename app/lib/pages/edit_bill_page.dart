@@ -6,10 +6,12 @@ import 'package:uuid/uuid.dart';
 import '../data/app_database.dart';
 import '../providers.dart';
 import '../recognition/bill_ocr.dart';
+import '../sync/aa_sync_service.dart';
 import '../theme.dart';
 import '../utils/balance.dart';
 import '../utils/money.dart';
 import '../widgets/number_pad.dart';
+import 'categories_page.dart';
 
 /// 记账 / 编辑账单页（钱迹风格布局）：
 /// 顶部类型页签 + 5列分类宫格 + 底部（备注 | 大金额 CNY / 属性胶囊 / 计算键盘）
@@ -146,10 +148,20 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
     );
-    if (picked != null) {
-      setState(() => _date = DateTime(picked.year, picked.month, picked.day,
-          _date.hour, _date.minute));
-    }
+    if (picked == null || !mounted) return;
+    // 接着选时间，精确到分钟
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_date),
+    );
+    if (!mounted) return;
+    setState(() {
+      _date = time == null
+          ? DateTime(picked.year, picked.month, picked.day, _date.hour,
+              _date.minute)
+          : DateTime(picked.year, picked.month, picked.day, time.hour,
+              time.minute);
+    });
   }
 
   // ---------- 保存 / 删除 ----------
@@ -207,8 +219,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       createdAt: widget.bill?.createdAt,
     );
 
-    // 新建的 AA 支出：创建分摊组 + 挂账应收（伙伴份额）
-    if (_aaOn && _type == 0 && widget.bill == null) {
+    // AA 支出：新建账单、或普通账单后补打开 AA 开关（转换），都创建分摊组并关联。
+    // 不生成收入账单——收入在伙伴确认回传后生成（设计图）。
+    var aaConverted = false;
+    if (_aaOn && _type == 0 && widget.bill?.aaGroupId == null) {
       Category? selCat;
       for (final c in categories) {
         if (c.id == catId) {
@@ -224,9 +238,55 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             categoryName: selCat?.name ?? '其他',
             categoryEmoji: selCat?.emoji ?? '📦',
           );
+      aaConverted = widget.bill != null; // 既有普通账单转 AA
     }
 
-    if (!mounted) return;
+    // 垫付方修改既有 AA 账单：同步分摊组，状态回「待伙伴确认」（待修改）
+    var ownerEdited = false;
+    final editGid = widget.bill?.aaGroupId;
+    if (editGid != null && _type == 0) {
+      final ownerMyUid = ref.read(metaProvider).value?['myUid'] ?? '';
+      final groupsNow =
+          ref.read(aaGroupsProvider).value ?? const <AaGroup>[];
+      AaGroup? eg;
+      for (final g in groupsNow) {
+        if (g.id == editGid) eg = g;
+      }
+      if (eg != null && eg.ownerUid == ownerMyUid) {
+        Category? selCat;
+        for (final c in categories) {
+          if (c.id == catId) {
+            selCat = c;
+            break;
+          }
+        }
+        await ref.read(aaSyncServiceProvider).ownerUpdatedAaGroup(
+              groupId: editGid,
+              newTotal: cents,
+              dateMs: _date.millisecondsSinceEpoch,
+              note: _noteCtl.text.trim(),
+              categoryName: selCat?.name ?? '其他',
+              categoryEmoji: selCat?.emoji ?? '📦',
+            );
+        ownerEdited = true;
+      }
+    }
+
+    if (!mounted || !context.mounted) return;
+    if (ownerEdited) {
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.of(context).pop();
+      messenger.showSnackBar(const SnackBar(
+          content: Text('AA 账单已修改，请导出同步文件通知伙伴重新确认')));
+      return;
+    }
+    if (aaConverted) {
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.of(context).pop();
+      messenger.showSnackBar(const SnackBar(
+          content: Text('已转为 AA 平分账单，请导出同步文件通知伙伴')));
+      return;
+    }
     if (again) {
       setState(() {
         _amount = '';
@@ -589,13 +649,31 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         ref.watch(categoriesProvider).value ?? const <Category>[];
     final meta = ref.watch(metaProvider).value ?? const <String, String>{};
     final paired = meta.containsKey('pairSecret');
+    final myUid = meta['myUid'] ?? '';
     final isTransfer = _type == 2;
 
-    // AA 账单与伙伴账本关联，M2 文件版锁定编辑
-    if (widget.bill?.aaGroupId != null) {
+    // 仅锁定伴生应收与结算转账；AA 支出账单可编辑（垫付方=全参数同步，接收方=私有字段）
+    final b = widget.bill;
+    final lockedAa = b != null &&
+        ((b.aaGroupId != null && b.type == 1) || b.settlementId != null);
+    if (lockedAa) {
       return _AaLockedView(
-          bill: widget.bill!, accounts: accounts, categories: categories);
+          bill: b, accounts: accounts, categories: categories);
     }
+
+    AaGroup? aaGroup;
+    if (b?.aaGroupId != null) {
+      final groups = ref.watch(aaGroupsProvider).value ?? const <AaGroup>[];
+      for (final g in groups) {
+        if (g.id == b!.aaGroupId) aaGroup = g;
+      }
+    }
+    final isAaOwnerEdit =
+        aaGroup != null && b != null && aaGroup.ownerUid == myUid && b.type == 0;
+    final isAaShareEdit = aaGroup != null &&
+        b != null &&
+        aaGroup.ownerUid != myUid &&
+        b.type == 0;
 
     final effAccountId =
         _accountId ?? (accounts.isNotEmpty ? accounts.first.id : null);
@@ -643,7 +721,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             : '「${selAcc.name}」入账后余额 ${centsToText(after)}');
       }
       if (_aaOn && _type == 0 && centsNow > 0) {
-        final partnerShare = (centsNow + 1) ~/ 2;
+        // 奇数总额多出的 1 分归垫付方（我）承担：伙伴份额向下取整
+        final partnerShare = AaSyncService.shareOfNonPayer(centsNow);
         hints.add(
             'AA平分：我 ¥${centsToText(centsNow - partnerShare)} / 伙伴 ¥${centsToText(partnerShare)}');
       }
@@ -670,7 +749,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
               icon: const Icon(Icons.photo_camera_outlined),
               tooltip: '图片识别记账',
               onPressed: _pickOcrImage),
-          if (widget.bill != null)
+          if (widget.bill != null &&
+              widget.bill!.aaGroupId == null &&
+              widget.bill!.settlementId == null)
             IconButton(
                 icon: const Icon(Icons.delete_outline), onPressed: _delete),
         ],
@@ -678,6 +759,31 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       body: SafeArea(
         child: Column(
           children: [
+            if (isAaOwnerEdit || isAaShareEdit)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: kPrimaryColor.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.sync, size: 16, color: kPrimaryColor),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        isAaOwnerEdit
+                            ? 'AA 账单 · 保存后请导出同步文件，伙伴将重新确认'
+                            : 'AA 份额账单 · 金额与日期由伙伴账单决定，可修改账户/分类/备注（仅本机）',
+                        style: const TextStyle(
+                            fontSize: 12, color: kPrimaryColor),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Expanded(
               child: isTransfer
                   ? const SizedBox.shrink()
@@ -694,6 +800,15 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                             selected: c.id == effCatId,
                             onTap: () => setState(() => _categoryId = c.id),
                           ),
+                        _CategoryCell(
+                          emoji: '⚙️',
+                          name: '管理',
+                          selected: false,
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                                builder: (_) => const CategoriesPage()),
+                          ),
+                        ),
                       ],
                     ),
             ),
@@ -768,7 +883,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                                 selAcc?.name ?? '选择账户',
                                 selAcc?.emoji,
                                 () => _pickAccount()),
-                            if (paired && _type == 0)
+                            // AA 开关：仅新建账单或普通账单（可后补转换）显示；已是 AA 账单的编辑态隐藏
+    if (paired && _type == 0 && widget.bill?.aaGroupId == null)
                               Padding(
                                 padding: const EdgeInsets.only(right: 8),
                                 child: FilterChip(
@@ -782,7 +898,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                               padding: const EdgeInsets.only(right: 8),
                               child: ActionChip(
                                 label: Text(_dateChipLabel),
-                                onPressed: _pickDate,
+                                onPressed:
+                                    isAaShareEdit ? null : _pickDate,
                               ),
                             ),
                           ],
@@ -790,14 +907,29 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                       ),
                     ),
                   ),
-                  NumberPad(
-                    onKey: _onKey,
-                    onBackspace: _onBackspace,
-                    onClear: () => setState(() => _amount = ''),
-                    onSave: () => _save(),
-                    onSaveAndAgain:
-                        widget.bill == null ? () => _save(again: true) : null,
-                  ),
+                  if (isAaShareEdit)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: SizedBox(
+                        width: double.infinity,
+                        height: 48,
+                        child: FilledButton(
+                          style: FilledButton.styleFrom(
+                              backgroundColor: kPrimaryColor),
+                          onPressed: () => _save(),
+                          child: const Text('保存'),
+                        ),
+                      ),
+                    )
+                  else
+                    NumberPad(
+                      onKey: _onKey,
+                      onBackspace: _onBackspace,
+                      onClear: () => setState(() => _amount = ''),
+                      onSave: () => _save(),
+                      onSaveAndAgain:
+                          widget.bill == null ? () => _save(again: true) : null,
+                    ),
                 ],
               ),
             ),
@@ -822,7 +954,14 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final selected = _type == t;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () => setState(() => _type = t),
+      // AA 账单编辑时锁定类型（支出），防止破坏与伙伴的关联结构
+      onTap: () {
+        if (widget.bill?.aaGroupId != null) {
+          _snack('AA 账单类型不可变更');
+          return;
+        }
+        setState(() => _type = t);
+      },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
@@ -1142,7 +1281,7 @@ class _OcrSheetState extends State<_OcrSheet> {
                 ],
               ),
             const Divider(height: 20),
-            // 日期：点选修改
+            // 日期：点选修改（日期 + 时间，精确到分钟）
             _row(
               Icons.schedule,
               '日期',
@@ -1154,10 +1293,17 @@ class _OcrSheetState extends State<_OcrSheet> {
                     initialDate: base,
                     firstDate: DateTime(2000),
                     lastDate: DateTime(2100));
-                if (picked != null) {
-                  setState(() => _selDate = DateTime(picked.year,
-                      picked.month, picked.day, base.hour, base.minute));
-                }
+                if (picked == null || !mounted || !context.mounted) return;
+                final time = await showTimePicker(
+                  context: context,
+                  initialTime: TimeOfDay.fromDateTime(base),
+                );
+                if (!mounted) return;
+                setState(() => _selDate = time == null
+                    ? DateTime(picked.year, picked.month, picked.day,
+                        base.hour, base.minute)
+                    : DateTime(picked.year, picked.month, picked.day,
+                        time.hour, time.minute));
               },
             ),
             // 备注：可编辑

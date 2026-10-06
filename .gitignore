@@ -47,3 +47,19 @@ key.properties
 # Test picture runtime cache
 TestPictures/cache/
 TestPictures/.thumbnails/
+
+# Runtime & local scratch artifacts
+# AA 同步文件（导出产物，含敏感账单数据）
+*.aas
+# 设备导出的数据库拷贝
+*.sqlite
+# 根目录调试截图（正式图片放 TestPictures/）
+/*.png
+# 根目录 UI dump 等临时导出
+/*.xml
+# 测试/构建崩溃日志
+/test_out.txt
+# 会话记忆笔记（个人内容不入库）
+/memory/
+# 一次命令事故产生的空文件
+/'
