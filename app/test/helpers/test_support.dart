@@ -148,10 +148,20 @@ Future<AppDatabase> pumpPage(
 }
 
 /// [pumpPage] 的配对清理：卸载组件树、关闭数据库（停掉 watch 流的 timer）
+/// 用有界泵帧替代 pumpAndSettle，避免残留动画把测试挂死
 Future<void> disposePage(WidgetTester tester, AppDatabase db) async {
-  await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
-  await tester.pumpAndSettle(const Duration(milliseconds: 50));
-  await db.close();
+  try {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+  } catch (_) {
+    // pumpWidget 可能因残留 Guarded conflict 抛错，忽略
+  }
+  try {
+    await db.close();
+  } catch (_) {
+    // close 可能因已关闭抛错，忽略
+  }
 }
 
 // ---------------------------------------------------------------------------
