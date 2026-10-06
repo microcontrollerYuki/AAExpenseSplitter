@@ -609,24 +609,37 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final picked = await showModalBottomSheet<String>(
       context: context,
       builder: (sctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(to ? '选择转入账户' : '选择账户',
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w600)),
-            ),
-            for (final a in accounts)
-              ListTile(
-                leading: Text(a.emoji,
-                    style: const TextStyle(fontSize: 22)),
-                title: Text(a.name),
-                onTap: () => Navigator.pop(sctx, a.id),
+        child: ConstrainedBox(
+          // 账户多时不能顶破屏幕：限高 + 内部滚动（修复 bottom overflowed）
+          constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sctx).size.height * 0.6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(to ? '选择转入账户' : '选择账户',
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w600)),
               ),
-            const SizedBox(height: 8),
-          ],
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: [
+                    for (final a in accounts)
+                      ListTile(
+                        leading: Text(a.emoji,
+                            style: const TextStyle(fontSize: 22)),
+                        title: Text(a.name),
+                        onTap: () => Navigator.pop(sctx, a.id),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
@@ -1325,24 +1338,39 @@ class _OcrSheetState extends State<_OcrSheet> {
                 final id = await showModalBottomSheet<String>(
                   context: context,
                   builder: (bctx) => SafeArea(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: Text('选择账户',
-                                style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600))),
-                        for (final a in widget.accounts)
-                          ListTile(
-                            leading: Text(a.emoji,
-                                style: const TextStyle(fontSize: 22)),
-                            title: Text(a.name),
-                            onTap: () => Navigator.pop(bctx, a.id),
+                    child: ConstrainedBox(
+                      // 限高 + 内部滚动，避免账户多时 bottom overflowed
+                      constraints: BoxConstraints(
+                          maxHeight:
+                              MediaQuery.of(bctx).size.height * 0.6),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: Text('选择账户',
+                                  style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600))),
+                          Flexible(
+                            child: ListView(
+                              shrinkWrap: true,
+                              padding: EdgeInsets.zero,
+                              children: [
+                                for (final a in widget.accounts)
+                                  ListTile(
+                                    leading: Text(a.emoji,
+                                        style:
+                                            const TextStyle(fontSize: 22)),
+                                    title: Text(a.name),
+                                    onTap: () => Navigator.pop(bctx, a.id),
+                                  ),
+                              ],
+                            ),
                           ),
-                        const SizedBox(height: 8),
-                      ],
+                          const SizedBox(height: 8),
+                        ],
+                      ),
                     ),
                   ),
                 );

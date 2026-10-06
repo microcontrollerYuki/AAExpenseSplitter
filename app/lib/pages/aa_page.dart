@@ -1204,22 +1204,36 @@ class _AaShareSheetState extends State<AaShareSheet> {
     final id = await showModalBottomSheet<String>(
       context: context,
       builder: (bctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-                padding: EdgeInsets.all(12),
-                child: Text('选择账户',
-                    style: TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w600))),
-            for (final a in widget.accounts)
-              ListTile(
-                leading: Text(a.emoji, style: const TextStyle(fontSize: 22)),
-                title: Text(a.name),
-                onTap: () => Navigator.pop(bctx, a.id),
+        child: ConstrainedBox(
+          // 限高 + 内部滚动，避免账户多时 bottom overflowed
+          constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(bctx).size.height * 0.6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text('选择账户',
+                      style: TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w600))),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: [
+                    for (final a in widget.accounts)
+                      ListTile(
+                        leading:
+                            Text(a.emoji, style: const TextStyle(fontSize: 22)),
+                        title: Text(a.name),
+                        onTap: () => Navigator.pop(bctx, a.id),
+                      ),
+                  ],
+                ),
               ),
-            const SizedBox(height: 8),
-          ],
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
