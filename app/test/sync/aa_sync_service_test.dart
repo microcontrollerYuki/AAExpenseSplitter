@@ -693,7 +693,7 @@ void main() {
       );
       final gid = (await db.getAllAaGroups()).single.id;
 
-      await svc.cancelAaGroup(groupId: gid, deleteOwnerBill: false);
+      await svc.cancelAaGroup(groupId: gid);
 
       expect((await db.getAaGroup(gid))!.status, 3);
       final full = (await db.watchAllBills().first)
@@ -707,7 +707,7 @@ void main() {
       expect(others, isEmpty);
     });
 
-    test('cancelAaGroup 删除：垫付账单软删除', () async {
+    test('cancelAaGroup 转普通收支：垫付账单转普通账单', () async {
       await pair();
       await db.upsertBill(
           id: 'bill-full',
@@ -726,7 +726,7 @@ void main() {
       );
       final gid = (await db.getAllAaGroups()).single.id;
 
-      await svc.cancelAaGroup(groupId: gid, deleteOwnerBill: true);
+      await svc.cancelAaGroup(groupId: gid);
 
       expect((await db.getAaGroup(gid))!.status, 3);
       final all = await (db.select(db.bills)).get();

@@ -164,17 +164,18 @@ int _myShare(AaGroup g, String myUid) {
 }
 
 /// AA 状态文案（设计图枚举：应收/应付 → 分区承载；拒绝/待修改/删除 → 行内状态）
+/// AA 状态枚举（图 1）：应收 / 拒绝 / 待修改
+/// status2：应收方(发起方)看「待修改」，应付方(接收方)看「拒绝」
+/// status3：已转普通收支，不在 AA 列表显示
 String _statusText(AaGroup g, String myUid) {
   if (g.settled) return '已结算';
   switch (g.status) {
-    case 1:
-      return g.ownerUid == myUid ? '已确认' : '已入账';
     case 2:
-      return g.ownerUid == myUid ? '待修改（已拒绝）' : '已拒绝';
+      return g.ownerUid == myUid ? '待修改' : '拒绝';
     case 3:
-      return '已删除';
+      return '已转普通收支';
     default:
-      return g.ownerUid == myUid ? '待伙伴确认' : '待我入账';
+      return '应收';
   }
 }
 
@@ -230,29 +231,31 @@ class _GroupsSectionState extends State<_GroupsSection> {
                   color: widget.accent)),
         ),
         for (final item in shown)
+        for (final item in shown)
           ListTile(
             dense: true,
             leading:
                 Text(item.categoryEmoji, style: const TextStyle(fontSize: 20)),
             title: Text(
-              '${item.payerUid == widget.myUid ? '我垫付' : '伙伴垫付'} · ${item.categoryName}'
-              '${item.note.isEmpty ? '' : ' · ${item.note}'}',
+              'AA平分：${item.categoryName}${item.note.isEmpty ? '' : ' · ${item.note}'}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 14),
             ),
-            subtitle: Text(
-              '${_fmtDate(item.dateMs)} · 总额 ¥ ${centsToText(item.totalAmount)} · ${_statusText(item, widget.myUid)}',
-              style: const TextStyle(fontSize: 12),
-            ),
-            trailing: Text(
-              '¥ ${centsToText(_myShare(item, widget.myUid))}',
-              style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: item.payerUid == widget.myUid
-                      ? kPrimaryColor
-                      : kExpenseColor),
+            subtitle: Row(
+              children: [
+                Expanded(
+                  child: Text(_statusText(item, widget.myUid),
+                      style: const TextStyle(fontSize: 12)),
+                ),
+                Text('¥ ${centsToText(_myShare(item, widget.myUid))}',
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: item.payerUid == widget.myUid
+                            ? kPrimaryColor
+                            : kExpenseColor)),
+              ],
             ),
           ),
         if (g.length > _collapseTo)
@@ -803,7 +806,7 @@ class _DashboardState extends ConsumerState<_Dashboard> {
             Text('待你处理（${returned.length}）',
                 style: const TextStyle(
                     fontSize: 15, fontWeight: FontWeight.w600)),
-            const Text('伙伴已退回，暂不计入差额。可改金额重发（需再确认）、取消 AA 或删除。',
+            const Text('伙伴已退回，暂不计入差额。可改金额重发（需再确认）或转普通收支。',
                 style: TextStyle(fontSize: 11, color: Colors.grey)),
             for (final g in returned)
               Padding(
@@ -853,16 +856,14 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                         TextButton.icon(
                           icon: const Icon(Icons.link_off, size: 16),
                           label: const Text('取消 AA'),
-                          onPressed: () => _cancelAa(
-                              context, ref, g, deleteOwnerBill: false),
+                          onPressed: () => _cancelAa(context, ref, g),
                         ),
                         TextButton.icon(
                           style: TextButton.styleFrom(
                               foregroundColor: kExpenseColor),
                           icon: const Icon(Icons.delete_outline, size: 16),
-                          label: const Text('删除'),
-                          onPressed: () => _cancelAa(
-                              context, ref, g, deleteOwnerBill: true),
+                          label: const Text('转普通收支'),
+                          onPressed: () => _cancelAa(context, ref, g),
                         ),
                       ],
                     ),
@@ -894,34 +895,27 @@ class _DashboardState extends ConsumerState<_Dashboard> {
     );
   }
 
-  /// 取消 AA / 删除（§4.3 ②③）：分摊组置「已取消」同步给伙伴，对方份额账单作废
-  Future<void> _cancelAa(BuildContext context, WidgetRef ref, AaGroup g,
-      {required bool deleteOwnerBill}) async {
+  /// 删除AA属性 → 转普通收支记录（图 1 需求）：垫付账单转普通账单，分摊组置「已转普通收支」同步给伙伴
+  Future<void> _cancelAa(BuildContext context, WidgetRef ref, AaGroup g) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: Text(deleteOwnerBill ? '删除 AA 账单' : '取消 AA'),
-        content: Text(deleteOwnerBill
-            ? '删除后这笔 AA 账单（含垫付账单）将在双方账本同步作废，确定删除吗？'
-            : '取消后垫付账单转为普通账单（不再是 AA），伙伴的份额账单同步作废，确定取消吗？'),
+        title: const Text('转普通收支'),
+        content: const Text('删除 AA 属性后，垫付账单将转为普通收支记录（不再是 AA），伙伴的份额账单同步作废。确定转换吗？'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
               child: const Text('取消')),
           FilledButton(
               onPressed: () => Navigator.pop(context, true),
-              child: Text(deleteOwnerBill ? '删除' : '取消 AA')),
+              child: const Text('转普通收支')),
         ],
       ),
     );
     if (ok != true) return;
-    await ref.read(aaSyncServiceProvider).cancelAaGroup(
-          groupId: g.id,
-          deleteOwnerBill: deleteOwnerBill,
-        );
+    await ref.read(aaSyncServiceProvider).cancelAaGroup(groupId: g.id);
     if (context.mounted) {
-      AaPage.showSnack(context,
-          deleteOwnerBill ? '已删除，请导出同步文件通知伙伴' : '已取消 AA，请导出同步文件通知伙伴');
+      AaPage.showSnack(context, '已转普通收支，请导出同步文件通知伙伴');
     }
   }
 

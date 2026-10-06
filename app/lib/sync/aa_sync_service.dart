@@ -173,10 +173,10 @@ class AaSyncService {
   /// [deleteOwnerBill] = true 走「删除」（全额账单软删除）；
   /// false 走「取消 AA」（全额账单转普通账单，保留）。
   /// 分摊组置 status=3（已取消）作为墓碑同步给伙伴，对方导入后删除其份额账单。
-  Future<void> cancelAaGroup({
-    required String groupId,
-    required bool deleteOwnerBill,
-  }) async {
+  /// 删除AA属性 → 转普通收支记录（需求 2026-10-06）：
+  /// 垫付账单转普通账单（isAa/aaGroupId 清空），分摊组置 status=3 同步给伙伴，
+  /// 对方份额账单通过墓碑机制作废
+  Future<void> cancelAaGroup({required String groupId}) async {
     final myUid = await _db.getMeta('myUid') ?? '';
     final now = DateTime.now().millisecondsSinceEpoch;
     final group = await _db.getAaGroup(groupId);
@@ -186,16 +186,16 @@ class AaSyncService {
       status: const Value(3),
       statusByUid: Value(myUid),
       statusAtMs: Value(now),
-      statusNote: Value(deleteOwnerBill ? '已删除' : '已取消AA'),
+      statusNote: const Value('已转普通收支'),
       updatedAtMs: Value(now),
     ));
     final linked = await _db.billsOfAaGroup(groupId);
     for (final b in linked) {
       final isFullExpense = b.type == 0 && b.amount == group.totalAmount;
-      if (isFullExpense && !deleteOwnerBill) {
-        await _db.unlinkBillFromAaGroup(b.id); // 取消 AA：转普通账单
+      if (isFullExpense) {
+        await _db.unlinkBillFromAaGroup(b.id); // 转普通账单
       } else {
-        await _db.softDeleteBill(b.id); // 全额账单删除 / 挂账应收作废
+        await _db.softDeleteBill(b.id); // 挂账应收/旧份额账单作废
       }
     }
   }
