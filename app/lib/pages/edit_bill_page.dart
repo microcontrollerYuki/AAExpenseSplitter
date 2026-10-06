@@ -8,7 +8,6 @@ import '../providers.dart';
 import '../recognition/bill_ocr.dart';
 import '../sync/aa_sync_service.dart';
 import '../theme.dart';
-import '../utils/balance.dart';
 import '../utils/money.dart';
 import '../widgets/number_pad.dart';
 import 'categories_page.dart';
@@ -701,8 +700,6 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       }
     }
 
-    final bills = ref.watch(allBillsProvider).value ?? const <Bill>[];
-    final balances = computeBalances(accounts, bills);
     Account? selAcc;
     for (final a in accounts) {
       if (a.id == effAccountId) selAcc = a;
@@ -725,14 +722,6 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             '「${selAcc.name}」→「${selToAcc.name}」¥ ${centsToText(centsNow)}');
       }
     } else {
-      if (selAcc != null && centsNow > 0) {
-        final after = _type == 0
-            ? (balances[selAcc.id] ?? 0) - centsNow
-            : (balances[selAcc.id] ?? 0) + centsNow;
-        hints.add(_type == 0
-            ? '「${selAcc.name}」支出后余额 ${centsToText(after)}'
-            : '「${selAcc.name}」入账后余额 ${centsToText(after)}');
-      }
       if (_aaOn && _type == 0 && centsNow > 0) {
         // 奇数总额多出的 1 分归垫付方（我）承担：伙伴份额向下取整
         final partnerShare = AaSyncService.shareOfNonPayer(centsNow);
