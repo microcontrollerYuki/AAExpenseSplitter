@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/app_database.dart';
-import '../data/presets.dart';
 import '../providers.dart';
 import '../theme.dart';
 import '../utils/money.dart';
@@ -17,10 +16,28 @@ class BillDetailPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final billState = ref.watch(allBillsProvider);
+    if (billState.hasError) {
+      return _status(const Text('账单读取失败，请返回后重试'));
+    }
+    if (!billState.hasValue) {
+      return _status(const CircularProgressIndicator());
+    }
+    Bill? latest;
+    for (final b in billState.value!) {
+      if (b.id == this.bill.id) {
+        latest = b;
+        break;
+      }
+    }
+    if (latest == null) {
+      return _status(const Text('账单已删除或不存在'));
+    }
+    // 展示和再次编辑使用同一份最新记录，构造参数只提供稳定 ID。
+    final bill = latest;
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final categories =
         ref.watch(categoriesProvider).value ?? const <Category>[];
-    final meta = ref.watch(metaProvider).value ?? const <String, String>{};
 
     Account? acc;
     for (final a in accounts) {
@@ -46,10 +63,9 @@ class BillDetailPage extends ConsumerWidget {
         title: const Text('账单详情'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                  builder: (_) => EditBillPage(bill: bill)),
-            ),
+            onPressed: () => Navigator.of(
+              context,
+            ).push(MaterialPageRoute(builder: (_) => EditBillPage(bill: bill))),
             child: const Text('修改'),
           ),
         ],
@@ -57,41 +73,48 @@ class BillDetailPage extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
         children: [
-          _amountCard(acc, toAcc),
+          _amountCard(bill, acc, toAcc),
           const SizedBox(height: 12),
-          _infoCard(cat, acc, toAcc, meta, isAa, isSettlement),
+          _infoCard(bill, cat, acc, toAcc, isAa, isSettlement),
         ],
       ),
     );
   }
 
-  Color get _amountColor => bill.type == 0
-      ? kExpenseColor
-      : (bill.type == 1 ? kIncomeColor : Colors.black87);
+  Widget _status(Widget child) => Scaffold(
+    appBar: AppBar(title: const Text('账单详情')),
+    body: Center(child: child),
+  );
 
-  String get _typeLabel =>
-      bill.type == 0 ? '支出' : (bill.type == 1 ? '收入' : '转账');
-
-  Widget _amountCard(Account? acc, Account? toAcc) {
+  Widget _amountCard(Bill bill, Account? acc, Account? toAcc) {
+    final amountColor = bill.type == 0
+        ? kExpenseColor
+        : (bill.type == 1 ? kIncomeColor : Colors.black87);
+    final typeLabel = bill.type == 0 ? '支出' : (bill.type == 1 ? '收入' : '转账');
     final sign = bill.type == 0 ? '-' : (bill.type == 1 ? '+' : '');
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: _amountColor.withValues(alpha: 0.10),
+        color: amountColor.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(_typeLabel,
-              style: const TextStyle(fontSize: 13, color: Colors.grey)),
+          Text(
+            typeLabel,
+            style: const TextStyle(fontSize: 13, color: Colors.grey),
+          ),
           const SizedBox(height: 6),
-          Text('$sign¥ ${centsToText(bill.amount)}',
-              style: TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                  color: _amountColor)),
+          Text(
+            '$sign¥ ${centsToText(bill.amount)}',
+            style: TextStyle(
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
+              color: amountColor,
+            ),
+          ),
           const SizedBox(height: 6),
           Text(
             bill.type == 2
@@ -104,8 +127,14 @@ class BillDetailPage extends ConsumerWidget {
     );
   }
 
-  Widget _infoCard(Category? cat, Account? acc, Account? toAcc,
-      Map<String, String> meta, bool isAa, bool isSettlement) {
+  Widget _infoCard(
+    Bill bill,
+    Category? cat,
+    Account? acc,
+    Account? toAcc,
+    bool isAa,
+    bool isSettlement,
+  ) {
     final d = DateTime.fromMillisecondsSinceEpoch(bill.dateMs);
     String two(int v) => v.toString().padLeft(2, '0');
 
@@ -114,8 +143,10 @@ class BillDetailPage extends ConsumerWidget {
       _row('账户', acc == null ? '—' : '${acc.emoji} ${acc.name}'),
       if (bill.type == 2)
         _row('转入账户', toAcc == null ? '—' : '${toAcc.emoji} ${toAcc.name}'),
-      _row('时间',
-          '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}'),
+      _row(
+        '时间',
+        '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}',
+      ),
       _row('备注', bill.note.isEmpty ? '—' : bill.note),
       if (isAa) _row('AA', 'AA 平分账单（修改需同步给伙伴重新确认）'),
       if (isSettlement) _row('结算', 'AA 结算生成的收支明细'),
@@ -137,13 +168,17 @@ class BillDetailPage extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-              width: 72,
-              child: Text(label,
-                  style: const TextStyle(fontSize: 13, color: Colors.grey))),
+            width: 72,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+          ),
           Expanded(
-            child: Text(value,
-                style: const TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w500)),
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+            ),
           ),
         ],
       ),

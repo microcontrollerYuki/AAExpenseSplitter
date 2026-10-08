@@ -18,7 +18,25 @@ class AccountInfoPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    final accountState = ref.watch(accountsProvider);
+    if (accountState.hasError) {
+      return _status(const Text('账户读取失败，请返回后重试'));
+    }
+    if (!accountState.hasValue) {
+      return _status(const CircularProgressIndicator());
+    }
+    final accounts = accountState.value!;
+    Account? latest;
+    for (final a in accounts) {
+      if (a.id == this.account.id) {
+        latest = a;
+        break;
+      }
+    }
+    if (latest == null) {
+      return _status(const Text('账户已删除或不存在'));
+    }
+    final account = latest;
     final bills = ref.watch(allBillsProvider).value ?? const <Bill>[];
     final balance = computeBalances(accounts, bills)[account.id] ?? 0;
 
@@ -59,28 +77,37 @@ class AccountInfoPage extends ConsumerWidget {
     );
   }
 
+  Widget _status(Widget child) => Scaffold(
+    appBar: AppBar(title: const Text('账户信息')),
+    body: Center(child: child),
+  );
+
   Widget _balanceCard(int balance) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [
-          kPrimaryColor,
-          kPrimaryColor.withValues(alpha: 0.78),
-        ]),
+        gradient: LinearGradient(
+          colors: [kPrimaryColor, kPrimaryColor.withValues(alpha: 0.78)],
+        ),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('账户余额',
-              style: TextStyle(fontSize: 13, color: Colors.white70)),
+          const Text(
+            '账户余额',
+            style: TextStyle(fontSize: 13, color: Colors.white70),
+          ),
           const SizedBox(height: 6),
-          Text('¥ ${centsToText(balance)}',
-              style: const TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white)),
+          Text(
+            '¥ ${centsToText(balance)}',
+            style: const TextStyle(
+              fontSize: 30,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
         ],
       ),
     );
@@ -105,16 +132,20 @@ class AccountInfoPage extends ConsumerWidget {
           children: [
             const Padding(
               padding: EdgeInsets.fromLTRB(14, 6, 14, 4),
-              child: Text('动账明细',
-                  style:
-                      TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              child: Text(
+                '动账明细',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
             ),
             if (related.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(20),
                 child: Center(
-                    child: Text('该账户还没有动账记录',
-                        style: TextStyle(color: Colors.grey, fontSize: 13))),
+                  child: Text(
+                    '该账户还没有动账记录',
+                    style: TextStyle(color: Colors.grey, fontSize: 13),
+                  ),
+                ),
               ),
             for (final key in monthKeys) ...[
               Padding(
@@ -141,11 +172,15 @@ class AccountInfoPage extends ConsumerWidget {
     final parts = key.split('-');
     return Row(
       children: [
-        Text('${parts[1].padLeft(2, '0')}月',
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        Text(
+          '${parts[1].padLeft(2, '0')}月',
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        ),
         const Spacer(),
-        Text('流入:¥${centsToText(inflow)}  流出:¥${centsToText(outflow)}',
-            style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        Text(
+          '流入:¥${centsToText(inflow)}  流出:¥${centsToText(outflow)}',
+          style: const TextStyle(fontSize: 12, color: Colors.grey),
+        ),
       ],
     );
   }
@@ -173,22 +208,26 @@ class AccountInfoPage extends ConsumerWidget {
         : (b.note.isEmpty ? (b.type == 0 ? '支出' : '收入') : b.note);
     return ListTile(
       dense: true,
-      leading: Text(b.type == 2 ? '🔁' : (b.type == 0 ? '💸' : '💰'),
-          style: const TextStyle(fontSize: 20)),
+      leading: Text(
+        b.type == 2 ? '🔁' : (b.type == 0 ? '💸' : '💰'),
+        style: const TextStyle(fontSize: 20),
+      ),
       title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(
-          '${d.month}-${d.day.toString().padLeft(2, '0')} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}',
-          style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        '${d.month}-${d.day.toString().padLeft(2, '0')} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}',
+        style: const TextStyle(fontSize: 12, color: Colors.grey),
+      ),
       trailing: Text(
         '${inflow ? '+' : '-'}${centsToText(amount)}',
         style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: inflow ? kIncomeColor : kExpenseColor),
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+          color: inflow ? kIncomeColor : kExpenseColor,
+        ),
       ),
-      onTap: () => Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => BillDetailPage(bill: b)),
-      ),
+      onTap: () =>
+          Navigator.of(context)
+              .push(MaterialPageRoute(builder: (_) => BillDetailPage(bill: b))),
     );
   }
 }

@@ -6,25 +6,45 @@ import 'package:aa_expense_splitter/pages/accounts_page.dart';
 
 import '../helpers/test_support.dart';
 
+Future<void> _saveEditedAccount(WidgetTester tester) async {
+  await tester.runAsync(() async {
+    await tester.tap(find.text('保存'));
+  });
+  for (
+    var i = 0;
+    i < 50 && find.byType(AlertDialog).evaluate().isNotEmpty;
+    i++
+  ) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+  expect(find.byType(AlertDialog), findsNothing);
+  await settleProviders(tester);
+}
+
 void main() {
   testWidgets('总资产与账户列表渲染（含不计入净资产的账户）', (tester) async {
     final db = TestAppDatabase();
     await db.getAllAccounts();
     await db.upsertAccount(
-        id: 'acc_virtual',
-        name: '公交卡',
-        emoji: '🚌',
-        type: 3,
-        initBalance: 5000,
-        includeNetWorth: false,
-        sort: 9);
+      id: 'acc_virtual',
+      name: '公交卡',
+      emoji: '🚌',
+      type: 3,
+      initBalance: 5000,
+      includeNetWorth: false,
+      sort: 9,
+    );
     await db.upsertBill(
-        id: 'b1',
-        type: 0,
-        amount: 2000,
-        categoryId: 'cat_food',
-        accountId: 'acc_cash',
-        dateMs: 1); // 现金支出 20.00
+      id: 'b1',
+      type: 0,
+      amount: 2000,
+      categoryId: 'cat_food',
+      accountId: 'acc_cash',
+      dateMs: 1,
+    ); // 现金支出 20.00
 
     await pumpPage(tester, const AccountsPage(), db: db);
 
@@ -60,8 +80,7 @@ void main() {
     await tester.tap(find.byTooltip('添加账户'));
     await tester.pumpAndSettle();
 
-    await tester.enterText(
-        find.widgetWithText(TextField, '名称'), '交通银行储蓄卡');
+    await tester.enterText(find.widgetWithText(TextField, '名称'), '交通银行储蓄卡');
     await tester.pump();
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
@@ -115,10 +134,8 @@ void main() {
     await tester.tap(find.byTooltip('添加账户'));
     await tester.pumpAndSettle();
 
-    final balanceField =
-        find.widgetWithText(TextField, '期初余额（元）');
-    await tester.enterText(
-        find.widgetWithText(TextField, '名称'), '测试');
+    final balanceField = find.widgetWithText(TextField, '期初余额（元）');
+    await tester.enterText(find.widgetWithText(TextField, '名称'), '测试');
     await tester.enterText(balanceField, '1234567');
     await tester.pump();
     // formatter 分组：1234567 → 1,234,567
@@ -174,12 +191,13 @@ void main() {
     final db = TestAppDatabase();
     await db.getAllAccounts();
     await db.upsertBill(
-        id: 'b1',
-        type: 0,
-        amount: 100,
-        categoryId: 'cat_food',
-        accountId: 'acc_wechat',
-        dateMs: 1);
+      id: 'b1',
+      type: 0,
+      amount: 100,
+      categoryId: 'cat_food',
+      accountId: 'acc_wechat',
+      dateMs: 1,
+    );
 
     await pumpPage(tester, const AccountsPage(), db: db);
 
@@ -195,6 +213,66 @@ void main() {
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 
+    await disposePage(tester, db);
+  });
+
+  testWidgets('账户连续两次编辑保留最新名称图标余额和资产设置', (tester) async {
+    final db = await pumpPage(tester, const AccountsPage());
+
+    await tester.tap(find.text('现金').first);
+    await settleProviders(tester);
+    await tester.tap(find.text('修改'));
+    await settleProviders(tester);
+    await tester.enterText(find.widgetWithText(TextField, '名称'), '备用现金');
+    await tester.tap(find.text('🪙'));
+    await tester.enterText(find.widgetWithText(TextField, '期初余额（元）'), '100');
+    await tester.tap(find.text('计入总资产'));
+    tester.testTextInput.hide();
+    await _saveEditedAccount(tester);
+
+    expect(find.text('🪙 备用现金'), findsOneWidget);
+    expect(find.text('¥ 100.00'), findsOneWidget);
+    await tester.tap(find.text('修改'));
+    await settleProviders(tester);
+    final nameField = tester.widget<TextField>(
+      find.widgetWithText(TextField, '名称'),
+    );
+    final balanceField = tester.widget<TextField>(
+      find.widgetWithText(TextField, '期初余额（元）'),
+    );
+    expect(nameField.controller!.text, '备用现金');
+    expect(balanceField.controller!.text, '100.00');
+    expect(
+      tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
+      isFalse,
+    );
+
+    // 第二次只改名称，其他属性不能被第一次进入信息页的快照覆盖。
+    await tester.enterText(find.widgetWithText(TextField, '名称'), '备用现金二次');
+    tester.testTextInput.hide();
+    await _saveEditedAccount(tester);
+    expect(find.text('🪙 备用现金二次'), findsOneWidget);
+    expect(find.text('¥ 100.00'), findsOneWidget);
+    final saved = await db.getAccount('acc_cash');
+    expect(saved!.name, '备用现金二次');
+    expect(saved.emoji, '🪙');
+    expect(saved.initBalance, 10000);
+    expect(saved.includeNetWorth, isFalse);
+    await disposePage(tester, db);
+  });
+
+  testWidgets('账户信息打开期间记录被删除后不再提供修改入口', (tester) async {
+    final db = await pumpPage(tester, const AccountsPage());
+    await tester.tap(find.text('支付宝'));
+    await settleProviders(tester);
+    expect(find.text('修改'), findsOneWidget);
+
+    // 模拟其他入口删除账户；信息页必须响应真实数据库变化。
+    await tester.runAsync(() => db.deleteAccount('acc_alipay'));
+    await settleProviders(tester);
+    expect(find.text('修改'), findsNothing);
+    expect(find.text('支付宝'), findsNothing);
+    expect(await db.getAccount('acc_alipay'), isNull);
     await disposePage(tester, db);
   });
 
