@@ -231,7 +231,6 @@ class _GroupsSectionState extends State<_GroupsSection> {
                   color: widget.accent)),
         ),
         for (final item in shown)
-        for (final item in shown)
           ListTile(
             dense: true,
             leading:

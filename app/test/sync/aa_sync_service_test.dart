@@ -707,7 +707,7 @@ void main() {
       expect(others, isEmpty);
     });
 
-    test('cancelAaGroup 转普通收支：垫付账单转普通账单', () async {
+    test('cancelAaGroup 转普通收支会清理旧版本挂账应收', () async {
       await pair();
       await db.upsertBill(
           id: 'bill-full',
@@ -726,13 +726,35 @@ void main() {
       );
       final gid = (await db.getAllAaGroups()).single.id;
 
+      // 旧版本记 AA 时生成的挂账应收，在转普通收支时也必须作废。
+      await db.upsertBill(
+        id: 'bill-legacy-receivable',
+        type: 1,
+        amount: 5000,
+        categoryId: kAaMarkerCategoryId,
+        accountId: kAaCreditAccountId,
+        dateMs: 10,
+        aaGroupId: gid,
+      );
+
       await svc.cancelAaGroup(groupId: gid);
 
-      expect((await db.getAaGroup(gid))!.status, 3);
+      final tombstone = (await db.getAaGroup(gid))!;
+      expect(tombstone.status, 3);
+      expect(tombstone.statusByUid, await db.getMeta('myUid'));
+      expect(tombstone.statusAtMs, isNotNull);
+      expect(tombstone.statusNote, '已转普通收支');
       final all = await (db.select(db.bills)).get();
-      // 新语义：记 AA 时不生成收入账单，仅有垫付账单且软删除
-      expect(all, hasLength(1));
-      expect(all.every((b) => b.deletedAt != null), isTrue);
+      expect(all, hasLength(2));
+      final full = all.firstWhere((b) => b.id == 'bill-full');
+      expect(full.amount, 10001);
+      expect(full.note, '火锅');
+      expect(full.deletedAt, isNull);
+      expect(full.isAa, isFalse);
+      expect(full.aaGroupId, isNull);
+      final receivable =
+          all.firstWhere((b) => b.id == 'bill-legacy-receivable');
+      expect(receivable.deletedAt, isNotNull);
     });
 
     test('导入取消墓碑（status=3）：接收方份额账单作废', () async {

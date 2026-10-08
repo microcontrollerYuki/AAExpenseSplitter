@@ -134,8 +134,11 @@ Future<AppDatabase> pumpPage(
   List<dynamic> overrides = const [],
 }) async {
   final database = db ?? TestAppDatabase();
+  addTearDown(() => disposePage(tester, database));
   await tester.pumpWidget(
     ProviderScope(
+      // 错误态测试应立即暴露错误，避免 Riverpod 默认重试持续显示 loading。
+      retry: (retryCount, error) => null,
       overrides: [
         databaseProvider.overrideWithValue(database),
         ...overrides,
@@ -143,24 +146,26 @@ Future<AppDatabase> pumpPage(
       child: localizedApp(page),
     ),
   );
-  await tester.pumpAndSettle();
+  await tester.pumpAndSettle(
+      const Duration(milliseconds: 100), EnginePhase.sendSemanticsUpdate,
+      const Duration(seconds: 5));
   return database;
 }
 
 /// [pumpPage] 的配对清理：卸载组件树、关闭数据库（停掉 watch 流的 timer）
 /// 用有界泵帧替代 pumpAndSettle，避免残留动画把测试挂死
+final _disposedPages = Expando<bool>();
+
 Future<void> disposePage(WidgetTester tester, AppDatabase db) async {
+  if (_disposedPages[db] == true) return;
   try {
     await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-  } catch (_) {
-    // pumpWidget 可能因残留 Guarded conflict 抛错，忽略
-  }
-  try {
-    await db.close();
-  } catch (_) {
-    // close 可能因已关闭抛错，忽略
+  } finally {
+    // Drift 的 watch 取消会使用真实定时器；关闭数据库不能等待假时钟前进。
+    await tester.runAsync(db.close);
+    _disposedPages[db] = true;
   }
 }
 
@@ -289,5 +294,7 @@ void clearMlKitMock() {
 
 /// 等待 riverpod StreamProvider 首批数据就绪（数据库 watch 流两拍）
 Future<void> settleProviders(WidgetTester tester) async {
-  await tester.pumpAndSettle(const Duration(milliseconds: 50));
+  await tester.pumpAndSettle(
+      const Duration(milliseconds: 50), EnginePhase.sendSemanticsUpdate,
+      const Duration(seconds: 5));
 }

@@ -25,6 +25,24 @@ Future<void> pumpFrames(WidgetTester tester) async {
   await tester.pump(const Duration(seconds: 3));
 }
 
+/// 将触发文件 IO / 加密的点击放进真实事件循环，避免 PBKDF2 的定时器
+/// 被 testWidgets 的假时钟截住。只等待操作，不等待用户关闭弹层。
+Future<void> tapAsync(WidgetTester tester, Finder finder) async {
+  await tester.runAsync(() async {
+    await tester.tap(finder);
+  });
+}
+
+Future<void> waitFor(WidgetTester tester, Finder finder) async {
+  for (var i = 0; i < 50 && finder.evaluate().isEmpty; i++) {
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)));
+    await tester.pump();
+  }
+  expect(finder, findsWidgets);
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
 /// 包装 testWidgets，强制 45 秒超时（不允许任何用例挂 10 分钟）
 void fastTest(String description, WidgetTesterCallback callback) {
   testWidgets(description, callback,
@@ -40,6 +58,7 @@ void main() {
     PathProviderPlatform.instance = pathProvider;
     share = FakeSharePlatform();
     spi.SharePlatform.instance = share;
+    fpi.FilePickerPlatform.instance = FakeFilePicker(null);
   });
 
   tearDown(() {
@@ -181,8 +200,8 @@ void main() {
       // 差额卡与列表尾部各显示一次份额
       expect(find.text('¥ 50.00'), findsNWidgets(2));
       expect(find.text('去结算'), findsOneWidget);
-      expect(find.text('我垫付 · 餐饮 · 晚饭'), findsOneWidget);
-      expect(find.textContaining('待伙伴确认'), findsOneWidget);
+      expect(find.text('AA平分：餐饮 · 晚饭'), findsOneWidget);
+      expect(find.text('应收'), findsOneWidget);
       await disposePage(tester, db);
     });
 
@@ -201,10 +220,8 @@ void main() {
       expect(find.text('你应转给 伙伴'), findsOneWidget);
       // 差额卡与应付分区行尾各显示一次份额
       expect(find.text('¥ 33.00'), findsNWidgets(2));
-      // 无分类名时行标题为「伙伴垫付 · 」
-      expect(find.text('伙伴垫付 · '), findsOneWidget);
-      // 「伙伴垫付」还出现在应付分区标题「应付账单（伙伴垫付 · 未结算）」里
-      expect(find.textContaining('伙伴垫付'), findsNWidgets(2));
+      expect(find.text('AA平分：'), findsOneWidget);
+      expect(find.textContaining('应付账单（伙伴垫付 · 未结算）'), findsOneWidget);
       await disposePage(tester, db);
     });
 
@@ -247,9 +264,16 @@ void main() {
       expect(find.text('伙伴 转给你 ¥ 50.00'), findsOneWidget);
       expect(find.text('确认结算'), findsOneWidget);
       expect(find.text('收入到账户'), findsOneWidget);
-      // 结算执行逻辑由 aa_sync_service_test 覆盖，此处只验 UI
-      await tester.tap(find.text('取消'));
+      await tester.tap(find.text('确认结算'));
       await pumpFrames(tester);
+      expect((await db.getAaGroup('g1'))!.settled, isTrue);
+      expect(await db.getAllSettlements(), hasLength(1));
+      final bills = await db.getAllBills();
+      expect(bills, hasLength(1));
+      expect(bills.single.type, 1);
+      expect(bills.single.amount, 5000);
+      expect(bills.single.accountId, 'acc_cash');
+      expect(find.text('已两清 🤝'), findsOneWidget);
       await disposePage(tester, db);
     });
 
@@ -281,16 +305,8 @@ void main() {
       final db = await pairedDb();
       await pumpPage(tester, const AaPage(), db: db);
 
-      await tester.tap(find.text('导出并发送'));
-      // 导出含 PBKDF2 加密（真实耗时数百毫秒），轮询等待分享方式弹层出现
-      for (var i = 0;
-          i < 30 && find.textContaining('系统分享').evaluate().isEmpty;
-          i++) {
-        await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 100)));
-        await tester.pump();
-      }
-      await pumpFrames(tester);
+      await tapAsync(tester, find.text('导出并发送'));
+      await waitFor(tester, find.textContaining('系统分享'));
       // 导出成功后弹出分享方式选择
       await tester.tap(find.textContaining('系统分享'));
       await tester.runAsync(
@@ -346,21 +362,18 @@ void main() {
       await tester.runAsync(() async {
         f.writeAsStringSync(await encryptToAasContent(payload, 'secret-1'));
       });
+      fpi.FilePickerPlatform.instance = FakeFilePicker(f.path);
       final db = await pairedDb();
       await pumpPage(tester, const AaPage(), db: db);
 
-      await tester.tap(find.text('导入伙伴文件'));
-      await tester.pump(); // 先派发点击，让导入链进入真实异步
-      // 文件读取/口令解密是真实异步，回真实事件循环跑完（testWidgets 默认假异步）
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 800)));
-      await pumpFrames(tester);
+      await tapAsync(tester, find.text('导入伙伴文件'));
+      await waitFor(tester, find.text('AA 账单入账'));
 
       expect(find.textContaining('导入成功'), findsOneWidget);
       expect(await db.getMeta('partnerUid'), 'uid-partner');
       // 待入账卡出现（伙伴发起 status=0），导入后自动弹出份额入账面板
       expect(find.text('待你入账（1）'), findsOneWidget);
-      expect(find.textContaining('待你入账'), findsOneWidget);
+      expect(find.byType(AaShareSheet), findsOneWidget);
 
       // 关闭自动弹出的入账面板，让 _import 的未 await 链正常收尾
       await tester.tap(find.text('入账并确认'));
@@ -373,14 +386,12 @@ void main() {
       await tester.runAsync(() async {
         f.writeAsStringSync(await encryptToAasContent({'fromUid': 'x'}, '别的口令'));
       });
+      fpi.FilePickerPlatform.instance = FakeFilePicker(f.path);
       final db = await pairedDb();
       await pumpPage(tester, const AaPage(), db: db);
 
-      await tester.tap(find.text('导入伙伴文件'));
-      await tester.pump(); // 先派发点击，让导入链进入真实异步
-      await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 800)));
-      await pumpFrames(tester);
+      await tapAsync(tester, find.text('导入伙伴文件'));
+      await waitFor(tester, find.textContaining('导入失败'));
 
       expect(find.textContaining('导入失败'), findsOneWidget);
       await disposePage(tester, db);
@@ -438,18 +449,20 @@ void main() {
       // 点待入账条目 → 打开份额入账面板
       await tester.tap(find.textContaining('总额 ¥ 20.00'));
       await pumpFrames(tester);
-      expect(find.textContaining('待你入账'), findsOneWidget);
+      expect(find.text('AA 账单入账'), findsOneWidget);
       await tester.tap(find.text('入账并确认'));
       await pumpFrames(tester);
 
       expect((await db.getAaGroup('pg1'))!.status, 1);
       // 入账不生成明细账单（图 2），只在 AA 页作为应付跟踪
-      expect(await db.watchAllBills().first, isEmpty);
-      expect(find.textContaining('已入账'), findsOneWidget);
+      expect(await db.getAllBills(), isEmpty);
+      expect(find.byType(AaShareSheet), findsNothing);
+      expect(find.text('待你入账（1）'), findsNothing);
+      expect(find.textContaining('应付账单（伙伴垫付 · 未结算）'), findsOneWidget);
       await disposePage(tester, db);
     });
 
-    fastTest('待你处理：被退回的 AA 账单显示理由与三个处理入口（不计差额）',
+    fastTest('待你处理：被退回的 AA 账单显示理由与处理入口（不计差额）',
         (tester) async {
       final db = await pairedDb(groups: [
         AaGroupsCompanion.insert(
@@ -471,7 +484,7 @@ void main() {
       expect(find.text('退回理由：这笔应该按 60/40 分'), findsOneWidget);
       expect(find.text('改金额重发'), findsOneWidget);
       expect(find.text('取消 AA'), findsOneWidget);
-      expect(find.text('删除'), findsOneWidget);
+      expect(find.text('转普通收支'), findsOneWidget);
       // 挂起中的账单不计入差额
       expect(find.text('已两清 🤝'), findsOneWidget);
       await disposePage(tester, db);
@@ -481,14 +494,37 @@ void main() {
       final db = await pairedDb();
       await pumpPage(tester, const AaPage(), db: db);
       // 三分区（应收/应付/已同步）标题 + 各自空态
-      expect(find.textContaining('待你入账'), findsOneWidget);
+      expect(find.textContaining('待你入账'), findsNothing);
       expect(find.textContaining('应收账单（我垫付 · 未结算）'), findsOneWidget);
       expect(find.textContaining('应付账单（伙伴垫付 · 未结算）'), findsOneWidget);
       expect(find.textContaining('已同步（完成）'), findsOneWidget);
       await disposePage(tester, db);
     });
 
-    fastTest('AA 账单列表：已结算/已拒绝/待我入账状态（三分区）', (tester) async {
+    fastTest('AA 账单列表：多笔应收每笔只显示一次', (tester) async {
+      final db = await pairedDb(groups: [
+        for (var i = 1; i <= 2; i++)
+          AaGroupsCompanion.insert(
+            id: 'g$i',
+            ownerUid: 'uid-me',
+            payerUid: 'uid-me',
+            totalAmount: 1000 * i,
+            dateMs: i,
+            categoryName: const Value('餐饮'),
+            note: Value('账单$i'),
+            createdAtMs: i,
+            updatedAtMs: i,
+          ),
+      ]);
+      await pumpPage(tester, const AaPage(), db: db);
+      expect(find.text('AA平分：餐饮 · 账单1'), findsOneWidget);
+      expect(find.text('AA平分：餐饮 · 账单2'), findsOneWidget);
+      expect(find.text('应收'), findsNWidgets(2));
+      expect(find.text('¥ 15.00'), findsOneWidget);
+      await disposePage(tester, db);
+    });
+
+    fastTest('AA 账单列表：应收/待修改/已结算状态（三分区）', (tester) async {
       final db = await pairedDb(groups: [
         // 我拥有待伙伴确认
         AaGroupsCompanion.insert(
@@ -542,11 +578,11 @@ void main() {
       await pumpPage(tester, const AaPage(), db: db);
 
       expect(find.textContaining('待你入账'), findsOneWidget);
-      expect(find.textContaining('待伙伴确认'), findsOneWidget);
-      expect(find.textContaining('待我入账'), findsOneWidget);
-      expect(find.textContaining('已入账'), findsOneWidget);
-      expect(find.textContaining('待修改（已拒绝）'), findsOneWidget);
-      expect(find.textContaining('已结算'), findsOneWidget);
+      // 待处理卡与待入账卡在列表上方，滚动后验证分区的状态。
+      await tester.scrollUntilVisible(find.text('已结算'), 300);
+      expect(find.text('应收'), findsNWidgets(3));
+      expect(find.text('待修改'), findsOneWidget);
+      expect(find.text('已结算'), findsOneWidget);
       await disposePage(tester, db);
     });
 

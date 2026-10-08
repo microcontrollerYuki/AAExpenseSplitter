@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:aa_expense_splitter/data/app_database.dart';
 import 'package:aa_expense_splitter/pages/accounts_page.dart';
+import 'package:aa_expense_splitter/pages/bill_detail_page.dart';
 import 'package:aa_expense_splitter/pages/bills_page.dart';
 import 'package:aa_expense_splitter/pages/edit_bill_page.dart';
 import 'package:aa_expense_splitter/providers.dart';
@@ -203,14 +204,20 @@ void main() {
     await tester.pumpAndSettle();
     expect(tileDx(), -76); // 滑开到位
 
-    // 点击账单本体 → 收起（不平移），不进编辑页
+    // 点击账单本体 → 收起（不平移），不进详情页或编辑页
     await tester.tap(find.text('餐饮'));
     await tester.pumpAndSettle();
     expect(tileDx(), 0);
+    expect(find.byType(BillDetailPage), findsNothing);
     expect(find.byType(EditBillPage), findsNothing);
 
-    // 再次点击（未滑开）→ 进入编辑页
+    // 再次点击（未滑开）→ 进入只读详情，按「修改」才进入编辑页
     await tester.tap(find.text('餐饮'));
+    await tester.pumpAndSettle();
+    expect(find.byType(BillDetailPage), findsOneWidget);
+    expect(find.byType(EditBillPage), findsNothing);
+
+    await tester.tap(find.text('修改'));
     await tester.pumpAndSettle();
     expect(find.byType(EditBillPage), findsOneWidget);
 
