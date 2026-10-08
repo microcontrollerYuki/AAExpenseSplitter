@@ -108,7 +108,10 @@ class AaSyncService {
   /// 净应收（分）：>0 伙伴应转给我；<0 我应转给伙伴
   Future<int> computeNet() async {
     final myUid = await _db.getMeta('myUid') ?? '';
-    final groups = await _db.getAllAaGroups();
+    return _computeNetFor(await _db.getAllAaGroups(), myUid);
+  }
+
+  static int _computeNetFor(Iterable<AaGroup> groups, String myUid) {
     var net = 0;
     for (final g in groups) {
       if (!countsTowardBalance(g)) continue;
@@ -121,37 +124,36 @@ class AaSyncService {
   /// 我发起结算：核销全部可结算分摊组，并**逐条**把应收/应付转成明细收支账单
   /// （图 2）——我垫付的每条生成收入（我收钱）、我应付的每条生成支出（我付钱），
   /// 账户统一为结算时选择的 [accountId]。不再生成任何转账。
-  Future<void> settle({required String accountId, String note = ''}) async {
-    final net = await computeNet();
-    if (net == 0) return;
-    final myUid = await _db.getMeta('myUid') ?? '';
-    final partnerUid = await _db.getMeta('partnerUid');
-    if (partnerUid == null || partnerUid.isEmpty) {
-      throw Exception('尚未导入过伙伴的同步文件，无法确定收款方');
-    }
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final id = const Uuid().v4();
-    final receiverUid = net > 0 ? myUid : partnerUid;
-    final amount = net.abs();
-    // 核销前快照：本次结算覆盖的分摊组（逐条转明细的依据）
-    final covered = [
-      for (final g in await _db.getAllAaGroups())
-        if (countsTowardBalance(g)) g
-    ];
-    await _db.upsertSettlement(SettlementsCompanion.insert(
-      id: id,
-      receiverUid: receiverUid,
-      amount: amount,
-      dateMs: now,
-      cutoffMs: now,
-      createdAtMs: now,
-      note: Value(note),
-    ));
-    await _db.markSettledUpTo(now, id);
-    await _db.setMeta(kAaSettleAccountKey, accountId);
-    await _createSettlementBillsFromGroups(
-        settlementId: id, covered: covered, accountId: accountId);
-  }
+  Future<void> settle({required String accountId, String note = ''}) =>
+      _db.transaction(() async {
+        final myUid = await _db.getMeta('myUid') ?? '';
+        // 同一快照决定净额、核销与落账，消费日期在未来的组也不会重复结算。
+        final covered = [
+          for (final g in await _db.getAllAaGroups())
+            if (countsTowardBalance(g)) g
+        ];
+        final net = _computeNetFor(covered, myUid);
+        if (net == 0) return;
+        final partnerUid = await _db.getMeta('partnerUid');
+        if (partnerUid == null || partnerUid.isEmpty) {
+          throw Exception('尚未导入过伙伴的同步文件，无法确定收款方');
+        }
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final id = const Uuid().v4();
+        await _db.upsertSettlement(SettlementsCompanion.insert(
+          id: id,
+          receiverUid: net > 0 ? myUid : partnerUid,
+          amount: net.abs(),
+          dateMs: now,
+          cutoffMs: now,
+          createdAtMs: now,
+          note: Value(note),
+        ));
+        await _db.markGroupsSettled([for (final g in covered) g.id], id, now);
+        await _db.setMeta(kAaSettleAccountKey, accountId);
+        await _createSettlementBillsFromGroups(
+            settlementId: id, covered: covered, accountId: accountId);
+      });
 
   /// 接收方确认 / 退回（更新既有行，缺省字段走 update.write，避免 upsert 缺必填字段报错）
   /// 退回（status=2）可附一句理由，账单挂起不计差额，等待发起方处理（§4.3）
@@ -274,121 +276,128 @@ class AaSyncService {
     final fromUid = data['fromUid'] as String? ?? '';
     final myUid = await _db.getMeta('myUid') ?? '';
     if (fromUid.isEmpty || fromUid == myUid) return '这是自己导出的文件，无需导入';
-    await _db.setMeta('partnerUid', fromUid);
-    await _db.setMeta('partnerName', (data['fromName'] as String?) ?? '伙伴');
+    return _db.transaction(() async {
+      await _db.setMeta('partnerUid', fromUid);
+      await _db.setMeta('partnerName', (data['fromName'] as String?) ?? '伙伴');
 
-    var newGroups = 0;
-    var updated = 0;
-    var newSettles = 0;
-    // 结算落账任务：需在分摊组合并完成后再逐条生成（依赖该结算覆盖的分摊组）
-    final settleJobs = <Map<String, Object?>>[];
+      var newGroups = 0;
+      var updated = 0;
+      var newSettles = 0;
+      // 结算落账任务：需在分摊组合并完成后再逐条生成（依赖该结算覆盖的分摊组）
+      final settleJobs = <Settlement>[];
 
-    // 先应用结算（会顺带标记旧分摊组），再合并分摊组
-    for (final s in (data['settlements'] as List? ?? [])) {
-      final m = Map<String, Object?>.from(s as Map);
-      final id = m['id'] as String;
-      if (await _db.getSettlement(id) != null) continue;
-      newSettles++;
-      await _db.upsertSettlement(SettlementsCompanion.insert(
-        id: id,
-        receiverUid: m['receiverUid'] as String,
-        amount: m['amount'] as int,
-        dateMs: m['dateMs'] as int,
-        cutoffMs: m['cutoffMs'] as int,
-        createdAtMs: m['createdAtMs'] as int? ?? 0,
-        note: Value((m['note'] as String?) ?? ''),
-      ));
-      await _db.markSettledUpTo(m['cutoffMs'] as int, id);
-      settleJobs.add(m);
-    }
-
-    for (final g in (data['groups'] as List? ?? [])) {
-      final m = Map<String, Object?>.from(g as Map);
-      final id = m['id'] as String;
-      final incomingUpdated = m['updatedAtMs'] as int? ?? 0;
-      final local = await _db.getAaGroup(id);
-      if (local == null) {
-        final ownerUid = m['ownerUid'] as String;
-        newGroups++;
-        await _db.upsertAaGroup(AaGroupsCompanion.insert(
+      // 结算只登记记录；覆盖范围由各分摊组的 settlementId 明确关联，
+      // 不能按消费日期核销本机尚未同步给伙伴的离线账单。
+      for (final s in (data['settlements'] as List? ?? [])) {
+        final m = Map<String, Object?>.from(s as Map);
+        final id = m['id'] as String;
+        final existing = await _db.getSettlement(id);
+        if (existing != null) {
+          // 首次导入可能因无真实账户而跳过落账，重导时继续幂等补录。
+          settleJobs.add(existing);
+          continue;
+        }
+        newSettles++;
+        await _db.upsertSettlement(SettlementsCompanion.insert(
           id: id,
-          ownerUid: ownerUid,
-          payerUid: m['payerUid'] as String,
-          totalAmount: m['totalAmount'] as int,
+          receiverUid: m['receiverUid'] as String,
+          amount: m['amount'] as int,
           dateMs: m['dateMs'] as int,
-          note: Value((m['note'] as String?) ?? ''),
-          categoryName: Value((m['categoryName'] as String?) ?? ''),
-          categoryEmoji: Value((m['categoryEmoji'] as String?) ?? '🤝'),
-          status: Value(m['status'] as int? ?? 0),
-          statusByUid: Value(m['statusByUid'] as String?),
-          statusAtMs: Value(m['statusAtMs'] as int?),
-          statusNote: Value(m['statusNote'] as String?),
-          settled: Value(m['settled'] as bool? ?? false),
-          settlementId: Value(m['settlementId'] as String?),
+          cutoffMs: m['cutoffMs'] as int,
           createdAtMs: m['createdAtMs'] as int? ?? 0,
-          updatedAtMs: incomingUpdated,
-        ));
-        // 伙伴发起的 AA 账单：不静默建账，进「待入账」；确认后也只记应付，
-        // 明细收支在结算时逐条生成（图 2 流程）
-      } else if (incomingUpdated > local.updatedAtMs) {
-        updated++;
-        final newTotal = m['totalAmount'] as int;
-        final newDateMs = m['dateMs'] as int;
-        final newStatus = m['status'] as int? ?? local.status;
-        // 更新既有行走 update.write：upsert(insertOnConflictUpdate) 缺必填字段会抛
-        // InvalidDataException，即使行已存在也先做 INSERT 完整性校验
-        await (_db.update(_db.aaGroups)..where((t) => t.id.equals(id)))
-            .write(AaGroupsCompanion(
-          totalAmount: Value(newTotal),
-          dateMs: Value(newDateMs),
           note: Value((m['note'] as String?) ?? ''),
-          categoryName: Value((m['categoryName'] as String?) ?? ''),
-          categoryEmoji: Value((m['categoryEmoji'] as String?) ?? '🤝'),
-          status: Value(newStatus),
-          statusByUid: Value(m['statusByUid'] as String?),
-          statusAtMs: Value(m['statusAtMs'] as int?),
-          statusNote: Value(m['statusNote'] as String?),
-          settled: Value(m['settled'] as bool? ?? local.settled),
-          settlementId: Value(m['settlementId'] as String?),
-          updatedAtMs: Value(incomingUpdated),
         ));
-        // 伙伴改了金额/日期 → 同步更新本机份额账单（金额=新份额，日期跟随）
-        if (local.ownerUid != myUid &&
-            newStatus <= 1 &&
-            (local.totalAmount != newTotal || local.dateMs != newDateMs)) {
-          final linked = await _db.billsOfAaGroup(id);
-          for (final b in linked) {
-            if (b.type == 0) {
-              await _db.updateBillAmountAndDate(
-                  b.id, shareOfNonPayer(newTotal), newDateMs);
+        settleJobs.add((await _db.getSettlement(id))!);
+      }
+
+      for (final g in (data['groups'] as List? ?? [])) {
+        final m = Map<String, Object?>.from(g as Map);
+        final id = m['id'] as String;
+        final incomingUpdated = m['updatedAtMs'] as int? ?? 0;
+        final local = await _db.getAaGroup(id);
+        if (local == null) {
+          final ownerUid = m['ownerUid'] as String;
+          newGroups++;
+          await _db.upsertAaGroup(AaGroupsCompanion.insert(
+            id: id,
+            ownerUid: ownerUid,
+            payerUid: m['payerUid'] as String,
+            totalAmount: m['totalAmount'] as int,
+            dateMs: m['dateMs'] as int,
+            note: Value((m['note'] as String?) ?? ''),
+            categoryName: Value((m['categoryName'] as String?) ?? ''),
+            categoryEmoji: Value((m['categoryEmoji'] as String?) ?? '🤝'),
+            status: Value(m['status'] as int? ?? 0),
+            statusByUid: Value(m['statusByUid'] as String?),
+            statusAtMs: Value(m['statusAtMs'] as int?),
+            statusNote: Value(m['statusNote'] as String?),
+            settled: Value(m['settled'] as bool? ?? false),
+            settlementId: Value(m['settlementId'] as String?),
+            createdAtMs: m['createdAtMs'] as int? ?? 0,
+            updatedAtMs: incomingUpdated,
+          ));
+          // 伙伴发起的 AA 账单：不静默建账，进「待入账」；确认后也只记应付，
+          // 明细收支在结算时逐条生成（图 2 流程）
+        } else if (incomingUpdated > local.updatedAtMs) {
+          updated++;
+          final newTotal = m['totalAmount'] as int;
+          final newDateMs = m['dateMs'] as int;
+          final newStatus = m['status'] as int? ?? local.status;
+          // 更新既有行走 update.write：upsert(insertOnConflictUpdate) 缺必填字段会抛
+          // InvalidDataException，即使行已存在也先做 INSERT 完整性校验
+          await (_db.update(_db.aaGroups)..where((t) => t.id.equals(id)))
+              .write(AaGroupsCompanion(
+            totalAmount: Value(newTotal),
+            dateMs: Value(newDateMs),
+            note: Value((m['note'] as String?) ?? ''),
+            categoryName: Value((m['categoryName'] as String?) ?? ''),
+            categoryEmoji: Value((m['categoryEmoji'] as String?) ?? '🤝'),
+            status: Value(newStatus),
+            statusByUid: Value(m['statusByUid'] as String?),
+            statusAtMs: Value(m['statusAtMs'] as int?),
+            statusNote: Value(m['statusNote'] as String?),
+            settled: Value(m['settled'] as bool? ?? local.settled),
+            settlementId: Value(m['settlementId'] as String?),
+            updatedAtMs: Value(incomingUpdated),
+          ));
+          // 伙伴改了金额/日期 → 同步更新本机份额账单（金额=新份额，日期跟随）
+          if (local.ownerUid != myUid &&
+              newStatus <= 1 &&
+              (local.totalAmount != newTotal || local.dateMs != newDateMs)) {
+            final linked = await _db.billsOfAaGroup(id);
+            for (final b in linked) {
+              if (b.type == 0) {
+                await _db.updateBillAmountAndDate(
+                    b.id, shareOfNonPayer(newTotal), newDateMs);
+              }
+            }
+          }
+          // 伙伴「取消 AA / 删除」（status=3 墓碑）→ 同步作废我的份额账单（§4.6 双方软删除）
+          if (local.ownerUid != myUid && newStatus == 3) {
+            final linked = await _db.billsOfAaGroup(id);
+            for (final b in linked) {
+              await _db.softDeleteBill(b.id);
             }
           }
         }
-        // 伙伴「取消 AA / 删除」（status=3 墓碑）→ 同步作废我的份额账单（§4.6 双方软删除）
-        if (local.ownerUid != myUid && newStatus == 3) {
-          final linked = await _db.billsOfAaGroup(id);
-          for (final b in linked) {
-            await _db.softDeleteBill(b.id);
-          }
-        }
       }
-    }
 
-    // 分摊组合并完成后再落账结算明细（与应付/应收逐条对应）
-    for (final m in settleJobs) {
-      await _createSettlementBills(
-        settlementId: m['id'] as String,
-        receiverUid: m['receiverUid'] as String,
-        amount: m['amount'] as int,
-        dateMs: m['dateMs'] as int,
-      );
-    }
+      // 分摊组合并完成后再落账结算明细（与应付/应收逐条对应）
+      for (final settlement in settleJobs) {
+        await _createSettlementBills(
+          settlementId: settlement.id,
+          receiverUid: settlement.receiverUid,
+          amount: settlement.amount,
+          dateMs: settlement.dateMs,
+        );
+      }
 
-    final t = DateTime.now();
-    String two(int v) => v.toString().padLeft(2, '0');
-    await _db.setMeta(
-        'lastImportAt', '${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}');
-    return '导入成功：新增 $newGroups 笔 AA 账单、更新 $updated、结算 $newSettles 笔';
+      final t = DateTime.now();
+      String two(int v) => v.toString().padLeft(2, '0');
+      await _db.setMeta(
+          'lastImportAt', '${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}');
+      return '导入成功：新增 $newGroups 笔 AA 账单、更新 $updated、结算 $newSettles 笔';
+    });
   }
 
   /// 待入账的伙伴 AA 账单（对方发起、尚未入账确认、未退回未结算）。

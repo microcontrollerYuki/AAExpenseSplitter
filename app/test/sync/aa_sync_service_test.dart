@@ -258,6 +258,42 @@ void main() {
       expect(expense.toAccountId, isNull);
       expect(expense.note, 'AA平分：'); // 无分类名/备注时的兜底文案
     });
+
+    test('settle：未来日期组也完整核销，二次结算不重复落账', () async {
+      await pair();
+      final myUid = (await db.getMeta('myUid'))!;
+      await db.setMeta('partnerUid', 'partner-uid');
+      final futureDate = DateTime.now()
+          .add(const Duration(days: 2))
+          .millisecondsSinceEpoch;
+      await db.upsertAaGroup(AaGroupsCompanion.insert(
+        id: 'future-group',
+        ownerUid: myUid,
+        payerUid: myUid,
+        totalAmount: 1000,
+        dateMs: futureDate,
+        status: const Value(1),
+        createdAtMs: 1,
+        updatedAtMs: 1,
+      ));
+
+      await svc.settle(accountId: 'acc_cash');
+
+      final settlement = (await db.getAllSettlements()).single;
+      final group = (await db.getAaGroup('future-group'))!;
+      expect(group.settled, isTrue);
+      expect(group.settlementId, settlement.id);
+      expect(await svc.computeNet(), 0);
+      final bills = await db.getAllBills();
+      expect(bills, hasLength(1));
+      expect(bills.single.amount, 500);
+      expect(bills.single.dateMs, futureDate);
+      expect(bills.single.settlementId, settlement.id);
+
+      await svc.settle(accountId: 'acc_cash');
+      expect(await db.getAllSettlements(), hasLength(1));
+      expect((await db.getAllBills()).single.id, bills.single.id);
+    });
   });
 
   group('setGroupStatus', () {
@@ -413,6 +449,188 @@ void main() {
       await dbA.close();
     });
 
+    test('双机结算：仅核销双方已同步的组，保留离线新增的旧日期组', () async {
+      final dbA = TestAppDatabase();
+      addTearDown(dbA.close);
+      final svcA = AaSyncService(dbA);
+      await dbA.getAllAccounts();
+      await svcA.setupPairing(
+          myName: '小A', partnerName: '小B', secret: 'share-secret-1');
+      await pair(myName: '小B', partnerName: '小A');
+      final uidA = (await dbA.getMeta('myUid'))!;
+      final uidB = (await db.getMeta('myUid'))!;
+      await dbA.upsertAaGroup(AaGroupsCompanion.insert(
+        id: 'g1',
+        ownerUid: uidA,
+        payerUid: uidA,
+        totalAmount: 2000,
+        dateMs: 10,
+        note: const Value('双方已同步'),
+        categoryName: const Value('餐饮'),
+        createdAtMs: 1,
+        updatedAtMs: 1,
+      ));
+      await svc.importSyncFile(await svcA.exportSyncFile());
+      await svc.confirmShare(group: (await db.getAaGroup('g1'))!);
+      await svcA.importSyncFile(await svc.exportSyncFile());
+
+      // B 离线补记更早消费日期的 g2，A 结算时尚未见过它。
+      await db.upsertAaGroup(AaGroupsCompanion.insert(
+        id: 'g2',
+        ownerUid: uidB,
+        payerUid: uidB,
+        totalAmount: 600,
+        dateMs: 5,
+        note: const Value('仅B本机'),
+        categoryName: const Value('交通'),
+        createdAtMs: 2,
+        updatedAtMs: 2,
+      ));
+      expect(await dbA.getAaGroup('g2'), isNull);
+      await svcA.settle(accountId: 'acc_cash');
+      final settlement = (await dbA.getAllSettlements()).single;
+      final exported = await svcA.exportSyncFile();
+
+      await svc.importSyncFile(exported);
+
+      expect((await db.getAaGroup('g1'))!.settled, isTrue);
+      expect((await db.getAaGroup('g1'))!.settlementId, settlement.id);
+      final offlineGroup = (await db.getAaGroup('g2'))!;
+      expect(offlineGroup.settled, isFalse);
+      expect(offlineGroup.settlementId, isNull);
+      expect(offlineGroup.updatedAtMs, 2);
+      expect(await svc.computeNet(), 300);
+      final bills = await db.getAllBills();
+      expect(bills, hasLength(1));
+      expect(bills.single.settlementId, settlement.id);
+      expect(bills.single.type, 0);
+      expect(bills.single.amount, 1000);
+      expect(bills.single.note, 'AA平分：餐饮 · 双方已同步');
+
+      await svc.importSyncFile(exported);
+      expect(await db.getAllSettlements(), hasLength(1));
+      expect((await db.getAllBills()).single.id, bills.single.id);
+      expect((await db.getAaGroup('g2'))!.settled, isFalse);
+      expect(await svc.computeNet(), 300);
+    });
+
+    test('导入结算同时合并较新组：金额备注与源更新时间不被覆盖', () async {
+      await pair();
+      await db.upsertAaGroup(AaGroupsCompanion.insert(
+        id: 'updated-group',
+        ownerUid: 'partner-uid',
+        payerUid: 'partner-uid',
+        totalAmount: 1000,
+        dateMs: 10,
+        note: const Value('旧备注'),
+        createdAtMs: 1,
+        updatedAtMs: 10,
+      ));
+      final payload = {
+        'format': 1,
+        'fromUid': 'partner-uid',
+        'fromName': '伙伴',
+        'settlements': [
+          {
+            'id': 'settle-updated',
+            'receiverUid': 'partner-uid',
+            'amount': 1300,
+            'dateMs': 30,
+            'cutoffMs': 30,
+            'createdAtMs': 30,
+          }
+        ],
+        'groups': [
+          {
+            'id': 'updated-group',
+            'ownerUid': 'partner-uid',
+            'payerUid': 'partner-uid',
+            'totalAmount': 2600,
+            'dateMs': 15,
+            'note': '新备注',
+            'categoryName': '餐饮',
+            'status': 1,
+            'settled': true,
+            'settlementId': 'settle-updated',
+            'createdAtMs': 1,
+            'updatedAtMs': 20,
+          }
+        ],
+      };
+      final f = File('${pathProvider.tempDir.path}/updated-settlement.aas')
+        ..writeAsStringSync(await encryptToAasContent(payload, 'share-secret-1'));
+
+      await svc.importSyncFile(f.path);
+
+      final group = (await db.getAaGroup('updated-group'))!;
+      expect(group.totalAmount, 2600);
+      expect(group.dateMs, 15);
+      expect(group.note, '新备注');
+      expect(group.updatedAtMs, 20);
+      expect(group.settled, isTrue);
+      expect(group.settlementId, 'settle-updated');
+      final bill = (await db.getAllBills()).single;
+      expect(bill.type, 0);
+      expect(bill.amount, 1300);
+      expect(bill.dateMs, 15);
+      expect(bill.note, 'AA平分：餐饮 · 新备注');
+      expect(bill.settlementId, 'settle-updated');
+
+      await svc.importSyncFile(f.path);
+      expect((await db.getAaGroup('updated-group'))!.updatedAtMs, 20);
+      expect((await db.getAllBills()).single.id, bill.id);
+    });
+
+    test('导入旧版无关联组结算：净额回退不核销本机无关组', () async {
+      await pair();
+      final myUid = (await db.getMeta('myUid'))!;
+      await db.upsertAaGroup(AaGroupsCompanion.insert(
+        id: 'unrelated-group',
+        ownerUid: myUid,
+        payerUid: myUid,
+        totalAmount: 700,
+        dateMs: 10,
+        createdAtMs: 1,
+        updatedAtMs: 1,
+      ));
+      final payload = {
+        'format': 1,
+        'fromUid': 'partner-uid',
+        'fromName': '伙伴',
+        'settlements': [
+          {
+            'id': 'legacy-settlement',
+            'receiverUid': myUid,
+            'amount': 1234,
+            'dateMs': 100,
+            'cutoffMs': 90,
+            'createdAtMs': 1,
+          }
+        ],
+        'groups': [],
+      };
+      final f = File('${pathProvider.tempDir.path}/legacy-settlement.aas')
+        ..writeAsStringSync(await encryptToAasContent(payload, 'share-secret-1'));
+
+      await svc.importSyncFile(f.path);
+
+      final group = (await db.getAaGroup('unrelated-group'))!;
+      expect(group.settled, isFalse);
+      expect(group.settlementId, isNull);
+      expect(group.updatedAtMs, 1);
+      expect(await svc.computeNet(), 350);
+      final bill = (await db.getAllBills()).single;
+      expect(bill.type, 1);
+      expect(bill.amount, 1234);
+      expect(bill.dateMs, 100);
+      expect(bill.note, 'AA平分：结算');
+      expect(bill.settlementId, 'legacy-settlement');
+
+      await svc.importSyncFile(f.path);
+      expect((await db.getAllBills()).single.id, bill.id);
+      expect(await svc.computeNet(), 350);
+    });
+
     test('导入含结算的文件：逐条生成收支账单且幂等', () async {
       await pair();
       final myUid = await db.getMeta('myUid');
@@ -478,7 +696,7 @@ void main() {
       expect(bills.where((b) => b.settlementId == 'settle-1').length, 1);
     });
 
-    test('导入结算时若本机无真实账户则跳过落账', () async {
+    test('导入结算无真实账户时跳过，补账户重导后幂等补录', () async {
       await pair();
       // 删掉全部真实账户，仅剩 AA挂账
       for (final a in await db.getAllAccounts()) {
@@ -506,7 +724,87 @@ void main() {
         ..writeAsStringSync(await encryptToAasContent(payload, 'share-secret-1'));
       await svc.importSyncFile(f.path);
       expect((await db.getAllSettlements()).length, 1);
-      expect(await db.watchAllBills().first, isEmpty);
+      expect(await db.getAllBills(), isEmpty);
+
+      await db.upsertAccount(
+        id: 'restored-account',
+        name: '补建账户',
+        emoji: '💵',
+        type: 0,
+        initBalance: 0,
+        includeNetWorth: true,
+        sort: 0,
+      );
+      await svc.importSyncFile(f.path);
+
+      final bill = (await db.getAllBills()).single;
+      expect(bill.settlementId, 'settle-noacc');
+      expect(bill.accountId, 'restored-account');
+      expect(bill.type, 0);
+      expect(bill.amount, 100);
+      expect(bill.note, 'AA平分：结算');
+      expect(await db.getAllSettlements(), hasLength(1));
+
+      await svc.importSyncFile(f.path);
+      expect((await db.getAllBills()).single.id, bill.id);
+      expect(await db.getAllSettlements(), hasLength(1));
+    });
+
+    test('导入格式错误时回滚结算分组与伙伴元数据', () async {
+      await pair();
+      await db.setMeta('partnerUid', 'known-partner');
+      await db.setMeta('lastImportAt', '原导入时间');
+      final previousPartnerUid = await db.getMeta('partnerUid');
+      final previousPartnerName = await db.getMeta('partnerName');
+      final previousImportAt = await db.getMeta('lastImportAt');
+      final payload = {
+        'format': 1,
+        'fromUid': 'incoming-partner',
+        'fromName': '不应保存的新伙伴名',
+        'settlements': [
+          {
+            'id': 'rollback-settlement',
+            'receiverUid': 'incoming-partner',
+            'amount': 500,
+            'dateMs': 30,
+            'cutoffMs': 30,
+            'createdAtMs': 30,
+          }
+        ],
+        'groups': [
+          {
+            'id': 'rollback-group',
+            'ownerUid': 'incoming-partner',
+            'payerUid': 'incoming-partner',
+            'totalAmount': 1000,
+            'dateMs': 10,
+            'settled': true,
+            'settlementId': 'rollback-settlement',
+            'createdAtMs': 1,
+            'updatedAtMs': 20,
+          },
+          {
+            'id': 'malformed-group',
+            'ownerUid': 'incoming-partner',
+            // 缺必填 payerUid：必须回滚前面已导入的数据。
+            'totalAmount': 1000,
+            'dateMs': 20,
+            'createdAtMs': 1,
+            'updatedAtMs': 20,
+          }
+        ],
+      };
+      final f = File('${pathProvider.tempDir.path}/malformed-import.aas')
+        ..writeAsStringSync(await encryptToAasContent(payload, 'share-secret-1'));
+
+      await expectLater(svc.importSyncFile(f.path), throwsA(anything));
+
+      expect(await db.getSettlement('rollback-settlement'), isNull);
+      expect(await db.getAllAaGroups(), isEmpty);
+      expect(await db.getAllBills(), isEmpty);
+      expect(await db.getMeta('partnerUid'), previousPartnerUid);
+      expect(await db.getMeta('partnerName'), previousPartnerName);
+      expect(await db.getMeta('lastImportAt'), previousImportAt);
     });
 
     test('分摊组更新：updatedAtMs 更大才更新，缺失字段取默认', () async {

@@ -359,6 +359,18 @@ class AppDatabase extends _$AppDatabase {
   Future<void> upsertAaGroup(AaGroupsCompanion c) =>
       into(aaGroups).insertOnConflictUpdate(c);
 
+  /// 只核销本次结算快照明确覆盖的分摊组，消费日期不影响覆盖范围。
+  Future<void> markGroupsSettled(
+      List<String> ids, String settlementId, int updatedAtMs) {
+    if (ids.isEmpty) return Future<void>.value();
+    return (update(aaGroups)..where((t) => t.id.isIn(ids)))
+        .write(AaGroupsCompanion(
+      settled: const Value(true),
+      settlementId: Value(settlementId),
+      updatedAtMs: Value(updatedAtMs),
+    ));
+  }
+
   /// 将 cutoffMs 及之前、可结算（未结算且非挂起/取消）的分摊组标记为已结算
   Future<void> markSettledUpTo(int cutoffMs, String settlementId) {
     final now = DateTime.now().millisecondsSinceEpoch;
