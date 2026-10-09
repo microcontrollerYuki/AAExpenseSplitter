@@ -102,6 +102,24 @@ void main() {
     return db;
   }
 
+  Future<void> expectAaRow(
+    WidgetTester tester,
+    String note, {
+    required String status,
+    String? amount,
+  }) async {
+    final row = find.ancestor(
+      of: find.text('AA平分：餐饮 · $note'),
+      matching: find.byType(ListTile),
+    );
+    await tester.scrollUntilVisible(row, 250, maxScrolls: 20);
+    expect(row, findsOneWidget);
+    expect(find.descendant(of: row, matching: find.text(status)), findsOneWidget);
+    if (amount != null) {
+      expect(find.descendant(of: row, matching: find.text(amount)), findsOneWidget);
+    }
+  }
+
   group('配对表单（未配对）', () {
     fastTest('渲染表单', (tester) async {
       final db = await pumpPage(tester, const AaPage());
@@ -524,7 +542,182 @@ void main() {
       await disposePage(tester, db);
     });
 
-    fastTest('AA 账单列表：应收/待修改/已结算状态（三分区）', (tester) async {
+    for (final status in [0, 1]) {
+      fastTest('AA 列表：status=$status 收付方向按垫付方，不按发起方', (tester) async {
+        final db = await pairedDb(groups: [
+          AaGroupsCompanion.insert(
+            id: 'receivable-$status',
+            ownerUid: 'uid-partner',
+            payerUid: 'uid-me',
+            totalAmount: 10000,
+            dateMs: 10,
+            note: const Value('伙伴发起我垫付'),
+            categoryName: const Value('餐饮'),
+            status: Value(status),
+            createdAtMs: 1,
+            updatedAtMs: 1,
+          ),
+          AaGroupsCompanion.insert(
+            id: 'payable-$status',
+            ownerUid: 'uid-me',
+            payerUid: 'uid-partner',
+            totalAmount: 10000,
+            dateMs: 11,
+            note: const Value('我发起伙伴垫付'),
+            categoryName: const Value('餐饮'),
+            status: Value(status),
+            createdAtMs: 1,
+            updatedAtMs: 1,
+          ),
+        ]);
+        await pumpPage(tester, const AaPage(), db: db);
+        expect(find.text('已两清 🤝'), findsOneWidget);
+        await expectAaRow(tester, '伙伴发起我垫付', status: '应收', amount: '¥ 50.00');
+        await expectAaRow(tester, '我发起伙伴垫付', status: '应付', amount: '¥ 50.00');
+        await disposePage(tester, db);
+      });
+    }
+
+    for (final iPaid in [true, false]) {
+      fastTest('AA 列表：奇数分${iPaid ? '应收' : '应付'}与差额一致，为对方应分摊金额',
+          (tester) async {
+        final db = await pairedDb(groups: [
+          AaGroupsCompanion.insert(
+            id: 'odd-cent',
+            ownerUid: 'uid-me',
+            payerUid: iPaid ? 'uid-me' : 'uid-partner',
+            totalAmount: 10001,
+            dateMs: 10,
+            note: const Value('奇数分账单'),
+            categoryName: const Value('餐饮'),
+            status: const Value(1),
+            createdAtMs: 1,
+            updatedAtMs: 1,
+          ),
+        ]);
+        await pumpPage(tester, const AaPage(), db: db);
+        expect(find.text(iPaid ? '伙伴 应转给你' : '你应转给 伙伴'), findsOneWidget);
+        // 差额与行内收付都应为 5000 分，垫付方自己的 5001 分不是应收款。
+        expect(find.text('¥ 50.00'), findsNWidgets(2));
+        await expectAaRow(tester, '奇数分账单',
+            status: iPaid ? '应收' : '应付', amount: '¥ 50.00');
+        await disposePage(tester, db);
+      });
+    }
+
+    fastTest('AA 列表：退回责任按发起方，个人份额仍保留奇数分', (tester) async {
+      final db = await pairedDb(groups: [
+        AaGroupsCompanion.insert(
+          id: 'returned-own-partner-paid',
+          ownerUid: 'uid-me',
+          payerUid: 'uid-partner',
+          totalAmount: 10001,
+          dateMs: 10,
+          note: const Value('我发起伙伴垫付已退回'),
+          categoryName: const Value('餐饮'),
+          status: const Value(2),
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        ),
+        AaGroupsCompanion.insert(
+          id: 'returned-partner-own-me-paid',
+          ownerUid: 'uid-partner',
+          payerUid: 'uid-me',
+          totalAmount: 10001,
+          dateMs: 11,
+          note: const Value('伙伴发起我垫付已退回'),
+          categoryName: const Value('餐饮'),
+          status: const Value(2),
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        ),
+        AaGroupsCompanion.insert(
+          id: 'returned-own-me-paid',
+          ownerUid: 'uid-me',
+          payerUid: 'uid-me',
+          totalAmount: 10001,
+          dateMs: 12,
+          note: const Value('我发起我垫付已退回'),
+          categoryName: const Value('餐饮'),
+          status: const Value(2),
+          createdAtMs: 1,
+          updatedAtMs: 1,
+        ),
+      ]);
+      await pumpPage(tester, const AaPage(), db: db);
+      expect(find.text('已两清 🤝'), findsOneWidget);
+      expect(find.text('基于 0 笔未结算 AA 账单'), findsOneWidget);
+      expect(find.text('待你处理（2）'), findsOneWidget);
+      expect(find.textContaining('总额 ¥ 100.01 · 我的份额 ¥ 50.01'), findsOneWidget);
+      expect(find.textContaining('总额 ¥ 100.01 · 我的份额 ¥ 50.00'), findsOneWidget);
+      await expectAaRow(tester, '我发起伙伴垫付已退回', status: '待修改');
+      await expectAaRow(tester, '伙伴发起我垫付已退回', status: '拒绝');
+      await expectAaRow(tester, '我发起我垫付已退回', status: '待修改');
+      await disposePage(tester, db);
+    });
+
+    fastTest('AA 列表：双方已结算覆盖待确认和退回状态，不再计入差额', (tester) async {
+      final db = await pairedDb(groups: [
+        for (final iPaid in [true, false])
+          AaGroupsCompanion.insert(
+            id: 'settled-$iPaid',
+            ownerUid: iPaid ? 'uid-partner' : 'uid-me',
+            payerUid: iPaid ? 'uid-me' : 'uid-partner',
+            totalAmount: 10001,
+            dateMs: iPaid ? 10 : 11,
+            note: Value(iPaid ? '已结算我垫付' : '已结算伙伴垫付'),
+            categoryName: const Value('餐饮'),
+            status: Value(iPaid ? 0 : 2),
+            settled: const Value(true),
+            createdAtMs: 1,
+            updatedAtMs: 1,
+          ),
+      ]);
+      await pumpPage(tester, const AaPage(), db: db);
+      expect(find.text('已两清 🤝'), findsOneWidget);
+      expect(find.text('基于 0 笔未结算 AA 账单'), findsOneWidget);
+      expect(find.textContaining('待你入账'), findsNothing);
+      expect(find.textContaining('待你处理'), findsNothing);
+      await expectAaRow(tester, '已结算我垫付', status: '已结算', amount: '¥ 50.00');
+      await expectAaRow(tester, '已结算伙伴垫付', status: '已结算', amount: '¥ 50.00');
+      expect(find.text('已同步（完成）（2）'), findsOneWidget);
+      await disposePage(tester, db);
+    });
+
+    fastTest('AA 列表：双方已取消的账单隐藏，不计入差额或待处理', (tester) async {
+      final db = await pairedDb(groups: [
+        for (final iPaid in [true, false])
+          AaGroupsCompanion.insert(
+            id: 'cancelled-$iPaid',
+            ownerUid: iPaid ? 'uid-me' : 'uid-partner',
+            payerUid: iPaid ? 'uid-me' : 'uid-partner',
+            totalAmount: 10001,
+            dateMs: iPaid ? 10 : 11,
+            note: Value(iPaid ? '我取消的账单' : '伙伴取消的账单'),
+            categoryName: const Value('餐饮'),
+            status: const Value(3),
+            createdAtMs: 1,
+            updatedAtMs: 1,
+          ),
+      ]);
+      await pumpPage(tester, const AaPage(), db: db);
+      expect(find.text('已两清 🤝'), findsOneWidget);
+      expect(find.text('基于 0 笔未结算 AA 账单'), findsOneWidget);
+      expect(find.textContaining('待你入账'), findsNothing);
+      expect(find.textContaining('待你处理'), findsNothing);
+      await tester.drag(find.byType(ListView), const Offset(0, -600));
+      await tester.pump();
+      expect(find.textContaining('我取消的账单'), findsNothing);
+      expect(find.textContaining('伙伴取消的账单'), findsNothing);
+      expect(find.text('已转普通收支'), findsNothing);
+      expect(find.textContaining('AA平分：'), findsNothing);
+      expect(find.textContaining('应收账单（我垫付 · 未结算）'), findsOneWidget);
+      expect(find.textContaining('应付账单（伙伴垫付 · 未结算）'), findsOneWidget);
+      expect(find.textContaining('已同步（完成）'), findsOneWidget);
+      await disposePage(tester, db);
+    });
+
+    fastTest('AA 账单列表：应收/应付/待修改/已结算状态（三分区）', (tester) async {
       final db = await pairedDb(groups: [
         // 我拥有待伙伴确认
         AaGroupsCompanion.insert(
@@ -533,6 +726,8 @@ void main() {
             payerUid: 'uid-me',
             totalAmount: 100,
             dateMs: 10,
+            note: const Value('状态a'),
+            categoryName: const Value('餐饮'),
             createdAtMs: 1,
             updatedAtMs: 1),
         // 伙伴拥有待我入账（ownerUid != myUid, status 0）
@@ -542,6 +737,8 @@ void main() {
             payerUid: 'uid-me',
             totalAmount: 200,
             dateMs: 11,
+            note: const Value('状态b'),
+            categoryName: const Value('餐饮'),
             createdAtMs: 1,
             updatedAtMs: 1),
         // 伙伴拥有已确认（非 owner 视角 = 已入账）
@@ -551,6 +748,8 @@ void main() {
             payerUid: 'uid-partner',
             totalAmount: 300,
             dateMs: 12,
+            note: const Value('状态c'),
+            categoryName: const Value('餐饮'),
             status: const Value(1),
             createdAtMs: 1,
             updatedAtMs: 1),
@@ -561,6 +760,8 @@ void main() {
             payerUid: 'uid-me',
             totalAmount: 400,
             dateMs: 13,
+            note: const Value('状态d'),
+            categoryName: const Value('餐饮'),
             status: const Value(2),
             createdAtMs: 1,
             updatedAtMs: 1),
@@ -571,6 +772,8 @@ void main() {
             payerUid: 'uid-partner',
             totalAmount: 500,
             dateMs: 14,
+            note: const Value('状态e'),
+            categoryName: const Value('餐饮'),
             settled: const Value(true),
             createdAtMs: 1,
             updatedAtMs: 1),
@@ -578,11 +781,12 @@ void main() {
       await pumpPage(tester, const AaPage(), db: db);
 
       expect(find.textContaining('待你入账'), findsOneWidget);
-      // 待处理卡与待入账卡在列表上方，滚动后验证分区的状态。
-      await tester.scrollUntilVisible(find.text('已结算'), 300);
-      expect(find.text('应收'), findsNWidgets(3));
-      expect(find.text('待修改'), findsOneWidget);
-      expect(find.text('已结算'), findsOneWidget);
+      // 按账单标题检查行，避免其他行的状态掩盖伙伴垫付的错误文案。
+      await expectAaRow(tester, '状态a', status: '应收');
+      await expectAaRow(tester, '状态b', status: '应收');
+      await expectAaRow(tester, '状态c', status: '应付');
+      await expectAaRow(tester, '状态d', status: '待修改');
+      await expectAaRow(tester, '状态e', status: '已结算');
       await disposePage(tester, db);
     });
 

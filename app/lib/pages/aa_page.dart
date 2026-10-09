@@ -163,9 +163,8 @@ int _myShare(AaGroup g, String myUid) {
   return g.payerUid == myUid ? g.totalAmount - partnerShare : partnerShare;
 }
 
-/// AA 状态文案（设计图枚举：应收/应付 → 分区承载；拒绝/待修改/删除 → 行内状态）
-/// AA 状态枚举（图 1）：应收 / 拒绝 / 待修改
-/// status2：应收方(发起方)看「待修改」，应付方(接收方)看「拒绝」
+/// 收付方向由垫付方决定；退回处理责任由发起方决定。
+/// status2：发起方看「待修改」，另一方看「拒绝」。
 /// status3：已转普通收支，不在 AA 列表显示
 String _statusText(AaGroup g, String myUid) {
   if (g.settled) return '已结算';
@@ -175,7 +174,7 @@ String _statusText(AaGroup g, String myUid) {
     case 3:
       return '已转普通收支';
     default:
-      return '应收';
+      return g.payerUid == myUid ? '应收' : '应付';
   }
 }
 
@@ -247,7 +246,7 @@ class _GroupsSectionState extends State<_GroupsSection> {
                   child: Text(_statusText(item, widget.myUid),
                       style: const TextStyle(fontSize: 12)),
                 ),
-                Text('¥ ${centsToText(_myShare(item, widget.myUid))}',
+                Text('¥ ${centsToText(AaSyncService.shareOfNonPayer(item.totalAmount))}',
                     style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
