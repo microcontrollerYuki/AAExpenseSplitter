@@ -33,6 +33,15 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   late DateTime _date;
   late final TextEditingController _noteCtl;
   bool _aaOn = false;
+  bool _savingSettlement = false;
+
+  bool get _isSettlementEdit {
+    final b = widget.bill;
+    return b != null &&
+        b.settlementId != null &&
+        b.aaGroupId == null &&
+        (b.type == 0 || b.type == 1);
+  }
 
   @override
   void initState() {
@@ -207,6 +216,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   // ---------- 保存 / 删除 ----------
 
   Future<void> _save({bool again = false}) async {
+    if (widget.bill?.settlementId != null) {
+      return _saveSettlementLocalFields();
+    }
     final db = ref.read(databaseProvider);
     final accounts = ref.read(accountsProvider).value ?? const <Account>[];
     final categories =
@@ -269,6 +281,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       // 编辑既有账单必须带上原 aaGroupId：否则 isAa/aaGroupId 会被抹掉，
       // AA 账单「失去平分属性」，再次勾选保存还会重复生成分摊组与挂账应收
       aaGroupId: widget.bill?.aaGroupId,
+      settlementId: widget.bill?.settlementId,
       createdAt: widget.bill?.createdAt,
     );
 
@@ -348,6 +361,34 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       _snack('已保存，继续记下一笔');
     } else {
       Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _saveSettlementLocalFields() async {
+    if (!_isSettlementEdit || _savingSettlement) return;
+    final b = widget.bill!;
+    setState(() => _savingSettlement = true);
+    try {
+      final db = ref.read(databaseProvider);
+      final saved = await db.updateSettlementBillLocalFields(
+        billId: b.id,
+        settlementId: b.settlementId!,
+        accountId: _accountId ?? b.accountId,
+        note: _noteCtl.text.trim(),
+      );
+      // 系统返回后的退出动画中仍可能 mounted，不能再退掉下层详情。
+      if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+      if (!saved) {
+        _snack('账单或账户已变更，请返回后重试');
+        return;
+      }
+      Navigator.of(context).pop();
+    } catch (_) {
+      if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+        _snack('保存失败，请重试');
+      }
+    } finally {
+      if (mounted) setState(() => _savingSettlement = false);
     }
   }
 
@@ -659,8 +700,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
 
   Future<void> _pickAccount({bool to = false}) async {
     var accounts = ref.read(accountsProvider).value ?? const <Account>[];
-    // 转账只允许本人钱包互转：选择器直接排除「AA挂账」虚拟账户
-    if (_type == 2) {
+    // 转账和结算收支只允许真实钱包，排除「AA挂账」虚拟账户。
+    if (_type == 2 || _isSettlementEdit) {
       accounts = accounts.where((a) => a.id != kAaCreditAccountId).toList();
     }
     final picked = await showModalBottomSheet<String>(
@@ -712,6 +753,81 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
 
   // ---------- 构建 ----------
 
+  Widget _settlementEditor(List<Account> accounts, List<Category> categories) {
+    final b = widget.bill!;
+    Account? account;
+    for (final a in accounts) {
+      if (a.id == (_accountId ?? b.accountId)) account = a;
+    }
+    Category? category;
+    for (final c in categories) {
+      if (c.id == b.categoryId) category = c;
+    }
+    final d = DateTime.fromMillisecondsSinceEpoch(b.dateMs);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('修改结算账单'),
+        leading: IconButton(
+          tooltip: '关闭',
+          icon: const Icon(Icons.close),
+          onPressed: _savingSettlement ? null : () => Navigator.of(context).pop(),
+        ),
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Text('仅修改本机账户和备注，不影响双方结算。'),
+            const SizedBox(height: 20),
+            Text(
+              '${b.type == 0 ? '支出' : '收入'} ¥ ${centsToText(b.amount)}',
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                color: b.type == 0 ? kExpenseColor : kIncomeColor,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '分类：${category == null ? '—' : '${category.emoji} ${category.name}'}',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '时间：${d.year}-${two(d.month)}-${two(d.day)} '
+              '${two(d.hour)}:${two(d.minute)}',
+            ),
+            const SizedBox(height: 16),
+            const Text('账户'),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: _accountChip(
+                account?.name ?? '请选择真实账户',
+                account?.emoji,
+                () {
+                  if (!_savingSettlement) _pickAccount();
+                },
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _noteCtl,
+              enabled: !_savingSettlement,
+              decoration: const InputDecoration(labelText: '备注'),
+              minLines: 1,
+              maxLines: 4,
+            ),
+            const SizedBox(height: 20),
+            FilledButton(
+              onPressed: _savingSettlement ? null : () => _save(),
+              child: const Text('保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
@@ -722,8 +838,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final myUid = meta['myUid'] ?? '';
     final isTransfer = _type == 2;
 
-    // 仅锁定伴生应收与结算转账；AA 支出账单可编辑（垫付方=全参数同步，接收方=私有字段）
     final b = widget.bill;
+    if (_isSettlementEdit) {
+      return _settlementEditor(accounts, categories);
+    }
+    // 旧结算转账、AA 伴生应收及异常混合关联保持只读。
     final lockedAa = b != null &&
         ((b.aaGroupId != null && b.type == 1) || b.settlementId != null);
     if (lockedAa) {

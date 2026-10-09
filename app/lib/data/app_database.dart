@@ -279,6 +279,34 @@ class AppDatabase extends _$AppDatabase {
           .write(BillsCompanion(
               isAa: const Value(true), aaGroupId: Value(groupId)));
 
+  /// 结算收支仅改本机字段，不用页面快照重写金额或结算关联。
+  Future<bool> updateSettlementBillLocalFields({
+    required String billId,
+    required String settlementId,
+    required String accountId,
+    required String note,
+  }) =>
+      transaction(() async {
+        if (accountId == kAaCreditAccountId) return false;
+        final account = await (select(accounts)
+              ..where((t) => t.id.equals(accountId)))
+            .getSingleOrNull();
+        if (account == null) return false;
+        final changed = await (update(bills)
+              ..where((t) =>
+                  t.id.equals(billId) &
+                  t.deletedAt.isNull() &
+                  t.settlementId.equals(settlementId) &
+                  t.aaGroupId.isNull() &
+                  t.type.isIn([0, 1])))
+            .write(BillsCompanion(
+              accountId: Value(accountId),
+              note: Value(note),
+              updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
+            ));
+        return changed == 1;
+      });
+
   Future<void> softDeleteBill(String id) =>
       (update(bills)..where((t) => t.id.equals(id))).write(
           BillsCompanion(deletedAt: Value(DateTime.now().millisecondsSinceEpoch)));

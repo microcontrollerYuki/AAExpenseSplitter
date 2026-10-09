@@ -8,7 +8,7 @@ import '../utils/money.dart';
 import 'edit_bill_page.dart';
 
 /// 账单详情页：**只读**展示一条账单，按下「修改」才进入编辑（需求 2026-10-06）。
-/// AA 伴生应收/结算账单等锁定项点「修改」后仍由编辑页的只读视图承载。
+/// 结算收支仅允许修改本机账户 / 备注；旧转账及 AA 伴生应收保持只读。
 class BillDetailPage extends ConsumerWidget {
   const BillDetailPage({super.key, required this.bill});
 
