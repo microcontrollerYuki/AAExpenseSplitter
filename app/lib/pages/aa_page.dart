@@ -32,6 +32,18 @@ class AaPage extends ConsumerWidget {
   static void showSnack(BuildContext context, String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
+
+  /// 弹层或确认框打开后仍可能收到结算，展示拒绝原因并保留当前页面。
+  static Future<bool> mutate(
+      BuildContext context, Future<void> Function() action) async {
+    try {
+      await action();
+      return true;
+    } on StateError catch (error) {
+      if (context.mounted) showSnack(context, error.message);
+      return false;
+    }
+  }
 }
 
 // ---------------- 配对表单 ----------------
@@ -705,10 +717,12 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                             foregroundColor: kExpenseColor),
                         onPressed: () async {
                           final reason = await askReturnReason(context);
-                          if (reason == null) return; // 取消
-                          await ref
-                              .read(aaSyncServiceProvider)
-                              .setGroupStatus(g.id, 2, reason: reason);
+                          if (reason == null || !context.mounted) return;
+                          final service = ref.read(aaSyncServiceProvider);
+                          if (!await AaPage.mutate(context,
+                              () => service.setGroupStatus(g.id, 2, reason: reason))) {
+                            return;
+                          }
                           if (context.mounted) {
                             AaPage.showSnack(context, '已退回，等待伙伴处理');
                           }
@@ -744,9 +758,11 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                               final categories = ref.read(categoriesProvider)
                                       .value ??
                                   const <Category>[];
-                              await ref
-                                  .read(aaSyncServiceProvider)
-                                  .adoptShareBillsDefault(picked, categories);
+                              final service = ref.read(aaSyncServiceProvider);
+                              if (!await AaPage.mutate(context,
+                                  () => service.adoptShareBillsDefault(picked, categories))) {
+                                return;
+                              }
                               if (!mounted || !context.mounted) return;
                               setState(() {
                                 _batchMode = false;
@@ -766,10 +782,14 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                         : () async {
                             final service =
                                 ref.read(aaSyncServiceProvider);
-                            for (final g in pending) {
-                              if (_selected.contains(g.id)) {
-                                await service.setGroupStatus(g.id, 2);
+                            if (!await AaPage.mutate(context, () async {
+                              for (final g in pending) {
+                                if (_selected.contains(g.id)) {
+                                  await service.setGroupStatus(g.id, 2);
+                                }
                               }
+                            })) {
+                              return;
                             }
                             if (!mounted || !context.mounted) return;
                             setState(() {
@@ -910,8 +930,11 @@ class _DashboardState extends ConsumerState<_Dashboard> {
         ],
       ),
     );
-    if (ok != true) return;
-    await ref.read(aaSyncServiceProvider).cancelAaGroup(groupId: g.id);
+    if (ok != true || !context.mounted) return;
+    final service = ref.read(aaSyncServiceProvider);
+    if (!await AaPage.mutate(context, () => service.cancelAaGroup(groupId: g.id))) {
+      return;
+    }
     if (context.mounted) {
       AaPage.showSnack(context, '已转普通收支，请导出同步文件通知伙伴');
     }
@@ -1172,14 +1195,19 @@ class AaShareSheet extends StatelessWidget {
   final AaSyncService service;
 
   Future<void> _confirm(BuildContext context) async {
-    await service.confirmShare(group: group);
+    if (!await AaPage.mutate(context, () => service.confirmShare(group: group))) {
+      return;
+    }
     if (context.mounted) Navigator.pop(context, 'adopt');
   }
 
   Future<void> _returnBill(BuildContext context) async {
     final reason = await askReturnReason(context);
-    if (reason == null) return; // 取消
-    await service.setGroupStatus(group.id, 2, reason: reason);
+    if (reason == null || !context.mounted) return;
+    if (!await AaPage.mutate(context,
+        () => service.setGroupStatus(group.id, 2, reason: reason))) {
+      return;
+    }
     if (context.mounted) Navigator.pop(context, 'return');
   }
 

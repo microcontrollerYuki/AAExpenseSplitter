@@ -220,6 +220,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       return _saveSettlementLocalFields();
     }
     final db = ref.read(databaseProvider);
+    final aaService = ref.read(aaSyncServiceProvider);
     final accounts = ref.read(accountsProvider).value ?? const <Account>[];
     final categories =
         ref.read(categoriesProvider).value ?? const <Category>[];
@@ -268,57 +269,27 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       if (!proceed || !mounted) return;
     }
 
+    if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
     final billId = widget.bill?.id ?? const Uuid().v4();
-    await db.upsertBill(
-      id: billId,
-      type: _type,
-      amount: cents,
-      categoryId: _type == 2 ? null : catId,
-      accountId: accId,
-      toAccountId: _type == 2 ? toId : null,
-      dateMs: _date.millisecondsSinceEpoch,
-      note: _noteCtl.text.trim(),
-      // 编辑既有账单必须带上原 aaGroupId：否则 isAa/aaGroupId 会被抹掉，
-      // AA 账单「失去平分属性」，再次勾选保存还会重复生成分摊组与挂账应收
-      aaGroupId: widget.bill?.aaGroupId,
-      settlementId: widget.bill?.settlementId,
-      createdAt: widget.bill?.createdAt,
-    );
-
-    // AA 支出：新建账单、或普通账单后补打开 AA 开关（转换），都创建分摊组并关联。
-    // 不生成收入账单——收入在伙伴确认回传后生成（设计图）。
     var aaConverted = false;
-    if (_aaOn && _type == 0 && widget.bill?.aaGroupId == null) {
-      Category? selCat;
-      for (final c in categories) {
-        if (c.id == catId) {
-          selCat = c;
-          break;
-        }
-      }
-      await ref.read(aaSyncServiceProvider).createAaBillFor(
-            billId: billId,
-            totalAmount: cents,
-            dateMs: _date.millisecondsSinceEpoch,
-            note: _noteCtl.text.trim(),
-            categoryName: selCat?.name ?? '其他',
-            categoryEmoji: selCat?.emoji ?? '📦',
-          );
-      aaConverted = widget.bill != null; // 既有普通账单转 AA
-    }
-
-    // 垫付方修改既有 AA 账单：同步分摊组，状态回「待伙伴确认」（待修改）
     var ownerEdited = false;
-    final editGid = widget.bill?.aaGroupId;
-    if (editGid != null && _type == 0) {
-      final ownerMyUid = ref.read(metaProvider).value?['myUid'] ?? '';
-      final groupsNow =
-          ref.read(aaGroupsProvider).value ?? const <AaGroup>[];
-      AaGroup? eg;
-      for (final g in groupsNow) {
-        if (g.id == editGid) eg = g;
-      }
-      if (eg != null && eg.ownerUid == ownerMyUid) {
+    try {
+      // 原始账单与共享组一起保存；遇到后台结算时不能留下部分改动。
+      await db.transaction(() async {
+        await db.upsertBill(
+          id: billId,
+          type: _type,
+          amount: cents,
+          categoryId: _type == 2 ? null : catId,
+          accountId: accId,
+          toAccountId: _type == 2 ? toId : null,
+          dateMs: _date.millisecondsSinceEpoch,
+          note: _noteCtl.text.trim(),
+          aaGroupId: widget.bill?.aaGroupId,
+          settlementId: widget.bill?.settlementId,
+          createdAt: widget.bill?.createdAt,
+        );
+
         Category? selCat;
         for (final c in categories) {
           if (c.id == catId) {
@@ -326,7 +297,29 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             break;
           }
         }
-        await ref.read(aaSyncServiceProvider).ownerUpdatedAaGroup(
+
+        // 新建 AA 或普通账单转 AA；结算时才逐条生成收支。
+        if (_aaOn && _type == 0 && widget.bill?.aaGroupId == null) {
+          await aaService.createAaBillFor(
+            billId: billId,
+            totalAmount: cents,
+            dateMs: _date.millisecondsSinceEpoch,
+            note: _noteCtl.text.trim(),
+            categoryName: selCat?.name ?? '其他',
+            categoryEmoji: selCat?.emoji ?? '📦',
+          );
+          aaConverted = widget.bill != null;
+        }
+
+        final editGid = widget.bill?.aaGroupId;
+        if (editGid != null && _type == 0) {
+          final group = await db.getAaGroup(editGid);
+          if (group == null) {
+            throw StateError('AA 关联记录已变更，请返回后重试');
+          }
+          final myUid = await db.getMeta('myUid') ?? '';
+          if (group.ownerUid == myUid) {
+            await aaService.ownerUpdatedAaGroup(
               groupId: editGid,
               newTotal: cents,
               dateMs: _date.millisecondsSinceEpoch,
@@ -334,11 +327,18 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
               categoryName: selCat?.name ?? '其他',
               categoryEmoji: selCat?.emoji ?? '📦',
             );
-        ownerEdited = true;
+            ownerEdited = true;
+          }
+        }
+      });
+    } on StateError catch (error) {
+      if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+        _snack(error.message);
       }
+      return;
     }
 
-    if (!mounted || !context.mounted) return;
+    if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
     if (ownerEdited) {
       final messenger = ScaffoldMessenger.of(context);
       Navigator.of(context).pop();
@@ -411,8 +411,16 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       ),
     );
     if (ok == true) {
-      await ref.read(databaseProvider).softDeleteBill(b.id);
-      if (mounted) Navigator.of(context).pop();
+      try {
+        await ref.read(databaseProvider).softDeleteBill(b.id);
+        if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+          Navigator.of(context).pop();
+        }
+      } on StateError catch (error) {
+        if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+          _snack(error.message);
+        }
+      }
     }
   }
 
@@ -842,6 +850,21 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     if (_isSettlementEdit) {
       return _settlementEditor(accounts, categories);
     }
+    AaGroup? aaGroup;
+    if (b?.aaGroupId != null) {
+      final groups = ref.watch(aaGroupsProvider);
+      for (final g in groups.value ?? const <AaGroup>[]) {
+        if (g.id == b!.aaGroupId) aaGroup = g;
+      }
+      if (aaGroup == null || aaGroup.settled) {
+        return _AaLockedView(
+          bill: b!, accounts: accounts, categories: categories,
+          message: aaGroup?.settled == true
+              ? '该 AA 账单已结算，为保持结算一致，不能再修改或删除。'
+              : '正在读取 AA 关联记录；如无法加载，请返回后重试。',
+        );
+      }
+    }
     // 旧结算转账、AA 伴生应收及异常混合关联保持只读。
     final lockedAa = b != null &&
         ((b.aaGroupId != null && b.type == 1) || b.settlementId != null);
@@ -850,13 +873,6 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           bill: b, accounts: accounts, categories: categories);
     }
 
-    AaGroup? aaGroup;
-    if (b?.aaGroupId != null) {
-      final groups = ref.watch(aaGroupsProvider).value ?? const <AaGroup>[];
-      for (final g in groups) {
-        if (g.id == b!.aaGroupId) aaGroup = g;
-      }
-    }
     final isAaOwnerEdit =
         aaGroup != null && b != null && aaGroup.ownerUid == myUid && b.type == 0;
     final isAaShareEdit = aaGroup != null &&
@@ -1215,11 +1231,13 @@ class _AaLockedView extends StatelessWidget {
     required this.bill,
     required this.accounts,
     required this.categories,
+    this.message = 'AA 账单与伙伴账本关联，为保持双方一致暂不支持编辑或删除。',
   });
 
   final Bill bill;
   final List<Account> accounts;
   final List<Category> categories;
+  final String message;
 
   @override
   Widget build(BuildContext context) {
@@ -1274,10 +1292,9 @@ class _AaLockedView extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          const Text(
-            'AA 账单与伙伴账本关联，为保持双方一致暂不支持编辑/删除。'
-            '如需更正：解除配对后处理，或等待后续版本的带同步修改能力。',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
+          Text(
+            message,
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
           ),
         ],
       ),

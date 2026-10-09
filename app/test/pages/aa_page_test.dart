@@ -480,6 +480,85 @@ void main() {
       await disposePage(tester, db);
     });
 
+    for (final returnBill in [false, true]) {
+      fastTest('入账面板打开后已结算：${returnBill ? '退回' : '确认'}提示且不修改数据',
+          (tester) async {
+        final groupId = returnBill ? 'stale-return' : 'stale-confirm';
+        final settlementId = 'settlement-$groupId';
+        final db = await pairedDb(groups: [
+          AaGroupsCompanion.insert(
+            id: groupId,
+            ownerUid: 'uid-partner',
+            payerUid: 'uid-partner',
+            totalAmount: 2000,
+            dateMs: 10,
+            categoryName: const Value('餐饮'),
+            createdAtMs: 1,
+            updatedAtMs: 1,
+          ),
+        ]);
+        await pumpPage(tester, const AaPage(), db: db);
+        await tester.tap(find.textContaining('总额 ¥ 20.00'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(AaShareSheet), findsOneWidget);
+
+        if (returnBill) {
+          await tester.tap(find.descendant(
+              of: find.byType(AaShareSheet), matching: find.text('退回')));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 300));
+          expect(find.text('退回 AA 账单'), findsOneWidget);
+          await tester.enterText(
+              find.widgetWithText(TextField, '退回理由（可选）'), '不应覆盖已结算记录');
+          tester.testTextInput.hide();
+        }
+
+        // 弹层持有未结算快照；模拟另一入口结算，不替换真实 service。
+        await tester.runAsync(() async {
+          await db.transaction(() async {
+            await db.upsertSettlement(SettlementsCompanion.insert(
+              id: settlementId,
+              receiverUid: 'uid-partner',
+              amount: 1000,
+              dateMs: 20,
+              cutoffMs: 20,
+              createdAtMs: 20,
+            ));
+            await db.markGroupsSettled([groupId], settlementId, 20);
+          });
+        });
+        await tester.pump();
+        final settledGroup = await db.getAaGroup(groupId);
+        final settlements = await db.getAllSettlements();
+        expect(settledGroup!.settled, isTrue);
+        expect(settledGroup.status, 0);
+
+        await tapAsync(
+          tester,
+          returnBill
+              ? find.widgetWithText(FilledButton, '退回')
+              : find.text('入账并确认'),
+        );
+        final warning = find.text('该 AA 账单已结算，不能再修改');
+        for (var i = 0; i < 20 && warning.evaluate().isEmpty; i++) {
+          await tester.runAsync(
+              () => Future<void>.delayed(const Duration(milliseconds: 50)));
+          await tester.pump();
+        }
+        expect(warning, findsOneWidget);
+        expect(tester.takeException(), isNull);
+        expect(find.byType(AaShareSheet), findsOneWidget);
+        expect(find.text('AA 账单入账'), findsOneWidget);
+        expect(find.byType(AaPage), findsOneWidget);
+        expect(await db.getAaGroup(groupId), settledGroup);
+        expect(await db.getAllSettlements(), settlements);
+        expect(await db.getAllBills(), isEmpty);
+        expect(find.text('已退回，等待伙伴处理'), findsNothing);
+        await disposePage(tester, db);
+      });
+    }
+
     fastTest('待你处理：被退回的 AA 账单显示理由与处理入口（不计差额）',
         (tester) async {
       final db = await pairedDb(groups: [

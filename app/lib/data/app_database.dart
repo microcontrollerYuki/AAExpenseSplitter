@@ -246,6 +246,20 @@ class AppDatabase extends _$AppDatabase {
 
   // ---------- 写入 ----------
 
+  /// 以库中现有关联判断，旧页面不能靠清空 aaGroupId 改写已结算原始账单。
+  /// 必须与对应写操作处于同一事务。
+  Future<void> _checkAaBillNotSettled(String billId) async {
+    final current = await (select(bills)
+          ..where((t) => t.id.equals(billId)))
+        .getSingleOrNull();
+    final groupId = current?.aaGroupId;
+    if (groupId == null) return;
+    final group = await getAaGroup(groupId);
+    if (group?.settled == true) {
+      throw StateError('该 AA 账单已结算，不能再修改');
+    }
+  }
+
   Future<void> upsertBill({
     required String id,
     required int type,
@@ -258,24 +272,26 @@ class AppDatabase extends _$AppDatabase {
     int? createdAt,
     String? aaGroupId,
     String? settlementId,
-  }) {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    return into(bills).insertOnConflictUpdate(BillsCompanion(
-      id: Value(id),
-      type: Value(type),
-      amount: Value(amount),
-      categoryId: Value(categoryId),
-      accountId: Value(accountId),
-      toAccountId: Value(toAccountId),
-      dateMs: Value(dateMs),
-      note: Value(note),
-      isAa: Value(aaGroupId != null),
-      aaGroupId: Value(aaGroupId),
-      settlementId: Value(settlementId),
-      createdAt: Value(createdAt ?? now),
-      updatedAt: Value(now),
-    ));
-  }
+  }) =>
+      transaction(() async {
+        await _checkAaBillNotSettled(id);
+        final now = DateTime.now().millisecondsSinceEpoch;
+        await into(bills).insertOnConflictUpdate(BillsCompanion(
+          id: Value(id),
+          type: Value(type),
+          amount: Value(amount),
+          categoryId: Value(categoryId),
+          accountId: Value(accountId),
+          toAccountId: Value(toAccountId),
+          dateMs: Value(dateMs),
+          note: Value(note),
+          isAa: Value(aaGroupId != null),
+          aaGroupId: Value(aaGroupId),
+          settlementId: Value(settlementId),
+          createdAt: Value(createdAt ?? now),
+          updatedAt: Value(now),
+        ));
+      });
 
   Future<void> linkBillToAaGroup(String billId, String groupId) =>
       (update(bills)..where((t) => t.id.equals(billId)))
@@ -310,9 +326,12 @@ class AppDatabase extends _$AppDatabase {
         return changed == 1;
       });
 
-  Future<void> softDeleteBill(String id) =>
-      (update(bills)..where((t) => t.id.equals(id))).write(
-          BillsCompanion(deletedAt: Value(DateTime.now().millisecondsSinceEpoch)));
+  Future<void> softDeleteBill(String id) => transaction(() async {
+        await _checkAaBillNotSettled(id);
+        await (update(bills)..where((t) => t.id.equals(id))).write(
+            BillsCompanion(
+                deletedAt: Value(DateTime.now().millisecondsSinceEpoch)));
+      });
 
   /// 撤销软删除（回收站/左滑撤销用）
   Future<void> restoreBill(String id) =>

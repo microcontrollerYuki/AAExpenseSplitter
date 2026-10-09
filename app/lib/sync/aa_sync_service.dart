@@ -157,18 +157,28 @@ class AaSyncService {
 
   /// 接收方确认 / 退回（更新既有行，缺省字段走 update.write，避免 upsert 缺必填字段报错）
   /// 退回（status=2）可附一句理由，账单挂起不计差额，等待发起方处理（§4.3）
-  Future<void> setGroupStatus(String groupId, int status,
-      {String? reason}) async {
-    final myUid = await _db.getMeta('myUid') ?? '';
-    final now = DateTime.now().millisecondsSinceEpoch;
-    await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
-        .write(AaGroupsCompanion(
-      status: Value(status),
-      statusByUid: Value(myUid),
-      statusAtMs: Value(now),
-      statusNote: Value(reason ?? ''),
-      updatedAtMs: Value(now),
-    ));
+  Future<void> setGroupStatus(String groupId, int status, {String? reason}) =>
+      _db.transaction(() async {
+        if (await _checkGroupNotSettled(groupId) == null) return;
+        final myUid = await _db.getMeta('myUid') ?? '';
+        final now = DateTime.now().millisecondsSinceEpoch;
+        await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
+            .write(AaGroupsCompanion(
+          status: Value(status),
+          statusByUid: Value(myUid),
+          statusAtMs: Value(now),
+          statusNote: Value(reason ?? ''),
+          updatedAtMs: Value(now),
+        ));
+      });
+
+  /// 用户写操作在事务内重读组，不能信任打开页面时尚未结算的快照。
+  Future<AaGroup?> _checkGroupNotSettled(String groupId) async {
+    final group = await _db.getAaGroup(groupId);
+    if (group?.settled == true) {
+      throw StateError('该 AA 账单已结算，不能再修改');
+    }
+    return group;
   }
 
   /// 发起方处理被退回的 AA 账单（§4.3 退回处理）：
@@ -178,29 +188,30 @@ class AaSyncService {
   /// 删除AA属性 → 转普通收支记录（需求 2026-10-06）：
   /// 垫付账单转普通账单（isAa/aaGroupId 清空），分摊组置 status=3 同步给伙伴，
   /// 对方份额账单通过墓碑机制作废
-  Future<void> cancelAaGroup({required String groupId}) async {
-    final myUid = await _db.getMeta('myUid') ?? '';
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final group = await _db.getAaGroup(groupId);
-    if (group == null) return;
-    await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
-        .write(AaGroupsCompanion(
-      status: const Value(3),
-      statusByUid: Value(myUid),
-      statusAtMs: Value(now),
-      statusNote: const Value('已转普通收支'),
-      updatedAtMs: Value(now),
-    ));
-    final linked = await _db.billsOfAaGroup(groupId);
-    for (final b in linked) {
-      final isFullExpense = b.type == 0 && b.amount == group.totalAmount;
-      if (isFullExpense) {
-        await _db.unlinkBillFromAaGroup(b.id); // 转普通账单
-      } else {
-        await _db.softDeleteBill(b.id); // 挂账应收/旧份额账单作废
-      }
-    }
-  }
+  Future<void> cancelAaGroup({required String groupId}) =>
+      _db.transaction(() async {
+        final group = await _checkGroupNotSettled(groupId);
+        if (group == null) return;
+        final myUid = await _db.getMeta('myUid') ?? '';
+        final now = DateTime.now().millisecondsSinceEpoch;
+        await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
+            .write(AaGroupsCompanion(
+          status: const Value(3),
+          statusByUid: Value(myUid),
+          statusAtMs: Value(now),
+          statusNote: const Value('已转普通收支'),
+          updatedAtMs: Value(now),
+        ));
+        final linked = await _db.billsOfAaGroup(groupId);
+        for (final b in linked) {
+          final isFullExpense = b.type == 0 && b.amount == group.totalAmount;
+          if (isFullExpense) {
+            await _db.unlinkBillFromAaGroup(b.id); // 转普通账单
+          } else {
+            await _db.softDeleteBill(b.id); // 挂账应收/旧份额账单作废
+          }
+        }
+      });
 
   // ---------- 导出 ----------
 
@@ -427,28 +438,30 @@ class AaSyncService {
     required String note,
     required String categoryName,
     required String categoryEmoji,
-  }) async {
-    final now = DateTime.now().millisecondsSinceEpoch;
-    await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
-        .write(AaGroupsCompanion(
-      totalAmount: Value(newTotal),
-      dateMs: Value(dateMs),
-      note: Value(note),
-      categoryName: Value(categoryName),
-      categoryEmoji: Value(categoryEmoji),
-      status: const Value(0),
-      statusByUid: const Value<String?>(null),
-      statusAtMs: const Value<int?>(null),
-      statusNote: const Value<String?>(null),
-      updatedAtMs: Value(now),
-    ));
-    final linked = await _db.billsOfAaGroup(groupId);
-    for (final b in linked) {
-      if (b.type == 1) {
-        await _db.softDeleteBill(b.id);
-      }
-    }
-  }
+  }) =>
+      _db.transaction(() async {
+        if (await _checkGroupNotSettled(groupId) == null) return;
+        final now = DateTime.now().millisecondsSinceEpoch;
+        await (_db.update(_db.aaGroups)..where((t) => t.id.equals(groupId)))
+            .write(AaGroupsCompanion(
+          totalAmount: Value(newTotal),
+          dateMs: Value(dateMs),
+          note: Value(note),
+          categoryName: Value(categoryName),
+          categoryEmoji: Value(categoryEmoji),
+          status: const Value(0),
+          statusByUid: const Value<String?>(null),
+          statusAtMs: const Value<int?>(null),
+          statusNote: const Value<String?>(null),
+          updatedAtMs: Value(now),
+        ));
+        final linked = await _db.billsOfAaGroup(groupId);
+        for (final b in linked) {
+          if (b.type == 1) {
+            await _db.softDeleteBill(b.id);
+          }
+        }
+      });
 
   /// 批量入账（长按批量确认）：与 [confirmShare] 同语义，只确认不建明细
   Future<void> adoptShareBillsDefault(

@@ -199,15 +199,24 @@ class _BillTileState extends ConsumerState<_BillTile> {
   static const double _reveal = 76;
   double _dx = 0;
 
-  void _delete() {
+  Future<void> _delete() async {
     final db = ref.read(databaseProvider);
     final messenger = ScaffoldMessenger.of(context);
-    db.softDeleteBill(widget.bill.id);
+    final billId = widget.bill.id;
+    try {
+      await db.softDeleteBill(billId);
+    } on StateError catch (error) {
+      if (messenger.mounted) {
+        messenger.showSnackBar(SnackBar(content: Text(error.message)));
+      }
+      return;
+    }
+    if (!messenger.mounted) return;
     messenger.showSnackBar(SnackBar(
       content: const Text('已删除 1 笔账单'),
       action: SnackBarAction(
         label: '撤销',
-        onPressed: () => db.restoreBill(widget.bill.id),
+        onPressed: () => db.restoreBill(billId),
       ),
     ));
   }
