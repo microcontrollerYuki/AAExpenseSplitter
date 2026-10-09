@@ -1,0 +1,28 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace = "com.aaexpense.transactionfixture"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "com.aaexpense.transactionfixture"
+        minSdk = 24
+        targetSdk = 36
+        versionCode = 1
+        versionName = "0.1"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// There must be no distributable release variant for this debug-only app.
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { variantBuilder ->
+        variantBuilder.enable = false
+    }
+}

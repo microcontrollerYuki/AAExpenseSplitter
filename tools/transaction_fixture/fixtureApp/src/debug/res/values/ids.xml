@@ -1,0 +1,14 @@
+<resources>
+    <item name="fixture_selector" type="id" />
+    <item name="fixture_transaction" type="id" />
+    <item name="fixture_canvas" type="id" />
+    <item name="fixture_status" type="id" />
+    <item name="fixture_amount" type="id" />
+    <item name="fixture_subtotal" type="id" />
+    <item name="fixture_discount" type="id" />
+    <item name="fixture_balance" type="id" />
+    <item name="fixture_merchant" type="id" />
+    <item name="fixture_payment_method" type="id" />
+    <item name="fixture_occurred_at" type="id" />
+    <item name="fixture_transaction_id" type="id" />
+</resources>

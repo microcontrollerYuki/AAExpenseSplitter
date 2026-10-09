@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "id": "nodes_success",
+      "mode": "nodes",
+      "title": "可读节点 · 支付成功",
+      "status": "success",
+      "direction": "expense",
+      "currency": "CNY",
+      "amountCents": 1234,
+      "expectedRecordedCents": 1234,
+      "merchant": "测试便利店",
+      "transactionId": "FIXTURE-NODES-SUCCESS-001",
+      "occurredAt": "2026-10-08 12:34:56",
+      "paymentMethod": "测试零钱",
+      "lines": [
+        {
+          "id": "status",
+          "text": "支付成功"
+        },
+        {
+          "id": "amount",
+          "text": "实付金额：¥12.34"
+        },
+        {
+          "id": "merchant",
+          "text": "商户：测试便利店"
+        },
+        {
+          "id": "payment_method",
+          "text": "支付方式：测试零钱"
+        },
+        {
+          "id": "occurred_at",
+          "text": "交易时间：2026-10-08 12:34:56"
+        },
+        {
+          "id": "transaction_id",
+          "text": "交易单号：FIXTURE-NODES-SUCCESS-001"
+        }
+      ]
+    },
+    {
+      "id": "nodes_failed",
+      "mode": "nodes",
+      "title": "可读节点 · 支付失败",
+      "status": "failed",
+      "direction": "expense",
+      "currency": "CNY",
+      "amountCents": 1234,
+      "expectedRecordedCents": null,
+      "merchant": "测试便利店",
+      "transactionId": "FIXTURE-NODES-FAILED-001",
+      "occurredAt": "2026-10-08 12:34:56",
+      "paymentMethod": "测试零钱",
+      "lines": [
+        {
+          "id": "status",
+          "text": "支付失败"
+        },
+        {
+          "id": "amount",
+          "text": "尝试支付：¥12.34"
+        },
+        {
+          "id": "merchant",
+          "text": "商户：测试便利店"
+        },
+        {
+          "id": "payment_method",
+          "text": "支付方式：测试零钱"
+        },
+        {
+          "id": "occurred_at",
+          "text": "交易时间：2026-10-08 12:34:56"
+        },
+        {
+          "id": "transaction_id",
+          "text": "交易单号：FIXTURE-NODES-FAILED-001"
+        }
+      ]
+    },
+    {
+      "id": "nodes_multi",
+      "mode": "nodes",
+      "title": "可读节点 · 多金额支付成功",
+      "status": "success",
+      "direction": "expense",
+      "currency": "CNY",
+      "amountCents": 9000,
+      "expectedRecordedCents": 9000,
+      "merchant": "测试便利店",
+      "transactionId": "FIXTURE-NODES-MULTI-001",
+      "occurredAt": "2026-10-08 12:34:56",
+      "paymentMethod": "测试零钱",
+      "lines": [
+        {
+          "id": "status",
+          "text": "支付成功"
+        },
+        {
+          "id": "subtotal",
+          "text": "原价：¥100.00"
+        },
+        {
+          "id": "discount",
+          "text": "优惠金额：¥10.00"
+        },
+        {
+          "id": "amount",
+          "text": "实付金额：¥90.00"
+        },
+        {
+          "id": "balance",
+          "text": "账户余额：¥1,234.56"
+        },
+        {
+          "id": "merchant",
+          "text": "商户：测试便利店"
+        },
+        {
+          "id": "payment_method",
+          "text": "支付方式：测试零钱"
+        },
+        {
+          "id": "occurred_at",
+          "text": "交易时间：2026-10-08 12:34:56"
+        },
+        {
+          "id": "transaction_id",
+          "text": "交易单号：FIXTURE-NODES-MULTI-001"
+        }
+      ]
+    },
+    {
+      "id": "canvas_success",
+      "mode": "canvas",
+      "title": "Canvas · 支付成功",
+      "status": "success",
+      "direction": "expense",
+      "currency": "CNY",
+      "amountCents": 1234,
+      "expectedRecordedCents": 1234,
+      "merchant": "测试便利店",
+      "transactionId": "FIXTURE-CANVAS-SUCCESS-001",
+      "occurredAt": "2026-10-08 12:34:56",
+      "paymentMethod": "测试零钱",
+      "lines": [
+        {
+          "id": "status",
+          "text": "支付成功"
+        },
+        {
+          "id": "amount",
+          "text": "实付金额：¥12.34"
+        },
+        {
+          "id": "merchant",
+          "text": "商户：测试便利店"
+        },
+        {
+          "id": "payment_method",
+          "text": "支付方式：测试零钱"
+        },
+        {
+          "id": "occurred_at",
+          "text": "交易时间：2026-10-08 12:34:56"
+        },
+        {
+          "id": "transaction_id",
+          "text": "交易单号：FIXTURE-CANVAS-SUCCESS-001"
+        }
+      ]
+    },
+    {
+      "id": "canvas_failed",
+      "mode": "canvas",
+      "title": "Canvas · 支付失败",
+      "status": "failed",
+      "direction": "expense",
+      "currency": "CNY",
+      "amountCents": 1234,
+      "expectedRecordedCents": null,
+      "merchant": "测试便利店",
+      "transactionId": "FIXTURE-CANVAS-FAILED-001",
+      "occurredAt": "2026-10-08 12:34:56",
+      "paymentMethod": "测试零钱",
+      "lines": [
+        {
+          "id": "status",
+          "text": "支付失败"
+        },
+        {
+          "id": "amount",
+          "text": "尝试支付：¥12.34"
+        },
+        {
+          "id": "merchant",
+          "text": "商户：测试便利店"
+        },
+        {
+          "id": "payment_method",
+          "text": "支付方式：测试零钱"
+        },
+        {
+          "id": "occurred_at",
+          "text": "交易时间：2026-10-08 12:34:56"
+        },
+        {
+          "id": "transaction_id",
+          "text": "交易单号：FIXTURE-CANVAS-FAILED-001"
+        }
+      ]
+    },
+    {
+      "id": "canvas_multi",
+      "mode": "canvas",
+      "title": "Canvas · 多金额支付成功",
+      "status": "success",
+      "direction": "expense",
+      "currency": "CNY",
+      "amountCents": 9000,
+      "expectedRecordedCents": 9000,
+      "merchant": "测试便利店",
+      "transactionId": "FIXTURE-CANVAS-MULTI-001",
+      "occurredAt": "2026-10-08 12:34:56",
+      "paymentMethod": "测试零钱",
+      "lines": [
+        {
+          "id": "status",
+          "text": "支付成功"
+        },
+        {
+          "id": "subtotal",
+          "text": "原价：¥100.00"
+        },
+        {
+          "id": "discount",
+          "text": "优惠金额：¥10.00"
+        },
+        {
+          "id": "amount",
+          "text": "实付金额：¥90.00"
+        },
+        {
+          "id": "balance",
+          "text": "账户余额：¥1,234.56"
+        },
+        {
+          "id": "merchant",
+          "text": "商户：测试便利店"
+        },
+        {
+          "id": "payment_method",
+          "text": "支付方式：测试零钱"
+        },
+        {
+          "id": "occurred_at",
+          "text": "交易时间：2026-10-08 12:34:56"
+        },
+        {
+          "id": "transaction_id",
+          "text": "交易单号：FIXTURE-CANVAS-MULTI-001"
+        }
+      ]
+    }
+  ]
+}
