@@ -246,6 +246,31 @@ void main() {
       expect(bills.map((b) => b.id), ['in1']);
     });
 
+    test('watchBillsOfRange 相邻区间各含起点但不含终点，空区间不返回账单', () async {
+      for (final dateMs in [99, 100, 150, 199, 200, 201]) {
+        await db.upsertBill(
+          id: 'boundary-$dateMs',
+          type: 0,
+          amount: 1,
+          accountId: 'acc_cash',
+          dateMs: dateMs,
+        );
+      }
+      await db.softDeleteBill('boundary-150');
+
+      final first = await db.watchBillsOfRange(100, 200).first;
+      final adjacent = await db.watchBillsOfRange(200, 300).first;
+      expect(first.map((b) => b.id), ['boundary-199', 'boundary-100']);
+      expect(adjacent.map((b) => b.id), ['boundary-201', 'boundary-200']);
+      expect(
+        first.map((b) => b.id).toSet().intersection(
+              adjacent.map((b) => b.id).toSet(),
+            ),
+        isEmpty,
+      );
+      expect(await db.watchBillsOfRange(200, 200).first, isEmpty);
+    });
+
     test('findSimilarBills：同类型同金额同日命中，可排除自身/软删除', () async {
       final day = DateTime(2026, 10, 5, 12);
       final ms = day.millisecondsSinceEpoch;

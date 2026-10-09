@@ -105,4 +105,36 @@ void main() {
 
     await disposePage(tester, db);
   });
+
+  testWidgets('下月零点支出不进入本月饼图，本月总额与趋势支出一致', (tester) async {
+    final db = TestAppDatabase();
+    await db.getAllAccounts();
+    final now = DateTime.now();
+    await db.upsertBill(
+      id: 'current-month',
+      type: 0,
+      amount: 1500,
+      categoryId: 'cat_food',
+      accountId: 'acc_cash',
+      dateMs: DateTime(now.year, now.month, 1).millisecondsSinceEpoch,
+    );
+    await db.upsertBill(
+      id: 'next-month-midnight',
+      type: 0,
+      amount: 90000,
+      categoryId: 'cat_food',
+      accountId: 'acc_cash',
+      dateMs: DateTime(now.year, now.month + 1, 1).millisecondsSinceEpoch,
+    );
+
+    await pumpPage(tester, const StatsPage(), db: db);
+    expect(find.text('¥ 15.00'), findsOneWidget);
+    final pie = tester.widget<PieChart>(find.byType(PieChart));
+    expect(pie.data.sections.single.value, 15);
+    final trend = tester.widget<BarChart>(find.byType(BarChart));
+    expect(trend.data.barGroups, hasLength(6));
+    expect(trend.data.barGroups.last.barRods.first.toY, 15);
+
+    await disposePage(tester, db);
+  });
 }

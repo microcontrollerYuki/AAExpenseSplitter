@@ -232,9 +232,12 @@ class AppDatabase extends _$AppDatabase {
         ]))
       .watch();
 
+  /// 未删除账单，按左闭右开区间 [startMs, endMs) 查询。
   Stream<List<Bill>> watchBillsOfRange(int startMs, int endMs) => (select(bills)
-        ..where(
-            (t) => t.deletedAt.isNull() & t.dateMs.isBetweenValues(startMs, endMs))
+        ..where((t) =>
+            t.deletedAt.isNull() &
+            t.dateMs.isBiggerOrEqualValue(startMs) &
+            t.dateMs.isSmallerThanValue(endMs))
         ..orderBy([
           (t) => OrderingTerm.desc(t.dateMs),
           (t) => OrderingTerm.desc(t.createdAt),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -102,6 +104,57 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 200));
       final v = container.read(monthBillsProvider).value ?? const <Bill>[];
       expect(v.map((b) => b.id), ['prev']);
+    });
+
+    test('monthBillsProvider 12月月初与月末归当月，次年零点只归下月', () async {
+      final initialMonth = container.read(selectedMonthProvider);
+      container.read(selectedMonthProvider.notifier).shift(12 - initialMonth.month);
+      final selectedMonth = container.read(selectedMonthProvider);
+      final monthStart = DateTime(selectedMonth.year, selectedMonth.month, 1)
+          .millisecondsSinceEpoch;
+      final nextMonthStart =
+          DateTime(selectedMonth.year, selectedMonth.month + 1, 1)
+              .millisecondsSinceEpoch;
+      for (final entry in {
+        'month-start': monthStart,
+        'month-last-ms': nextMonthStart - 1,
+        'next-month-start': nextMonthStart,
+      }.entries) {
+        await db.upsertBill(
+          id: entry.key,
+          type: 0,
+          amount: 1,
+          accountId: 'acc_cash',
+          dateMs: entry.value,
+        );
+      }
+
+      final nextMonthEmission = Completer<List<Bill>>();
+      subs.add(container.listen<AsyncValue<List<Bill>>>(
+        monthBillsProvider,
+        (_, next) {
+          final bills = next.value;
+          if (!next.isLoading &&
+              bills != null &&
+              bills.length == 1 &&
+              bills.single.id == 'next-month-start' &&
+              !nextMonthEmission.isCompleted) {
+            nextMonthEmission.complete(bills);
+          }
+        },
+      ));
+
+      final current = await container
+          .read(monthBillsProvider.future)
+          .timeout(const Duration(seconds: 2));
+      expect(current.map((b) => b.id), ['month-last-ms', 'month-start']);
+
+      container.read(selectedMonthProvider.notifier).shift(1);
+      expect(container.read(selectedMonthProvider),
+          DateTime(selectedMonth.year + 1, 1, 1));
+      final next =
+          await nextMonthEmission.future.timeout(const Duration(seconds: 2));
+      expect(next.map((b) => b.id), ['next-month-start']);
     });
 
     test('aaGroupsProvider / settlementsProvider 暴露写入数据', () async {
