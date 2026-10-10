@@ -322,7 +322,13 @@ void main() {
 
     expect(find.byType(BillDetailPage), findsOneWidget);
     expect(find.text('-¥ 20.00'), findsOneWidget);
-    expect(find.text('第一次修改'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BillDetailPage),
+        matching: find.text('第一次修改'),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('修改前的账单'), findsNothing);
 
     await tester.tap(find.text('修改'));
@@ -335,7 +341,13 @@ void main() {
     await _saveEditedBill(tester);
 
     expect(find.text('-¥ 20.00'), findsOneWidget);
-    expect(find.text('第二次修改'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BillDetailPage),
+        matching: find.text('第二次修改'),
+      ),
+      findsOneWidget,
+    );
     final saved = (await db.getAllBills()).single;
     expect(saved.id, 'refresh_bill');
     expect(saved.amount, 2000);

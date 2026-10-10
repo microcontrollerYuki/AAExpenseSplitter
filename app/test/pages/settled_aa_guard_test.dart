@@ -184,10 +184,28 @@ void main() {
       final bill = await _seedOriginalAa(db, ownerView: ownerView);
       final before = await _snapshot(db);
 
-      await pumpPage(tester, EditBillPage(bill: bill), db: db);
+      await pumpPage(
+        tester,
+        Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showBillDetailSheet(context: context, bill: bill),
+            child: const Text('查看已结算账单'),
+          ),
+        ),
+        db: db,
+      );
+      await tester.tap(find.text('查看已结算账单'));
+      await settleProviders(tester);
+      expect(find.byType(BottomSheet), findsOneWidget);
+      await tester.tap(find.text('修改'));
+      await settleProviders(tester);
 
       _expectSettledReadOnly();
       expect(await _snapshot(db), before);
+      await tester.binding.handlePopRoute();
+      await settleProviders(tester);
+      expect(find.byType(BillDetailPage), findsOneWidget);
+      expect(find.byType(BottomSheet), findsOneWidget);
       expect(tester.takeException(), isNull);
       await disposePage(tester, db);
     });

@@ -8,7 +8,35 @@ import '../theme.dart';
 import '../utils/money.dart';
 import 'edit_bill_page.dart';
 
-/// 账单详情页：**只读**展示一条账单，按下「修改」才进入编辑（需求 2026-10-06）。
+/// Shared entry point for bills, account activity and future report details.
+/// Keep the sheet in the stack while editing so returning retains the list.
+Future<void> showBillDetailSheet({
+  required BuildContext context,
+  required Bill bill,
+}) {
+  FocusScope.of(context).unfocus();
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    clipBehavior: Clip.antiAlias,
+    builder: (context) => Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: LayoutBuilder(
+        builder: (context, constraints) => ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: constraints.maxHeight * .85),
+          child: SafeArea(top: false, child: BillDetailPage(bill: bill)),
+        ),
+      ),
+    ),
+  );
+}
+
+/// 只读账单详情内容，按下「修改」才进入编辑。
 /// 结算收支仅允许修改本机账户 / 备注；旧转账及 AA 伴生应收保持只读。
 class BillDetailPage extends ConsumerWidget {
   const BillDetailPage({super.key, required this.bill});
@@ -19,10 +47,10 @@ class BillDetailPage extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final billState = ref.watch(allBillsProvider);
     if (billState.hasError) {
-      return _status(const Text('账单读取失败，请返回后重试'));
+      return _status(context, const Text('账单读取失败，请返回后重试'));
     }
     if (!billState.hasValue) {
-      return _status(const CircularProgressIndicator());
+      return _status(context, const CircularProgressIndicator());
     }
     Bill? latest;
     for (final b in billState.value!) {
@@ -32,7 +60,7 @@ class BillDetailPage extends ConsumerWidget {
       }
     }
     if (latest == null) {
-      return _status(const Text('账单已删除或不存在'));
+      return _status(context, const Text('账单已删除或不存在'));
     }
     // 展示和再次编辑使用同一份最新记录，构造参数只提供稳定 ID。
     final bill = latest;
@@ -59,35 +87,95 @@ class BillDetailPage extends ConsumerWidget {
     final isAa = bill.aaGroupId != null || bill.isAa;
     final isSettlement = bill.settlementId != null;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('账单详情'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(
-              context,
-            ).push(MaterialPageRoute(builder: (_) => EditBillPage(bill: bill))),
-            child: const Text('修改'),
-          ),
-        ],
-      ),
-      body: ListView(
+    return _frame(
+      context,
+      onEdit: () {
+        if (ModalRoute.of(context)?.isCurrent != true) return;
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => EditBillPage(bill: bill)),
+        );
+      },
+      child: SingleChildScrollView(
+        key: const ValueKey('bill-detail-scroll'),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-        children: [
-          _amountCard(bill, acc, toAcc),
-          const SizedBox(height: 12),
-          _infoCard(
-            bill, cat, CategoryHierarchy(categories).pathOf(bill.categoryId),
-            acc, toAcc, isAa, isSettlement,
-          ),
-        ],
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _amountCard(bill, acc, toAcc),
+            const SizedBox(height: 12),
+            _infoCard(
+              bill,
+              cat,
+              CategoryHierarchy(categories).pathOf(bill.categoryId),
+              acc,
+              toAcc,
+              isAa,
+              isSettlement,
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _status(Widget child) => Scaffold(
-    appBar: AppBar(title: const Text('账单详情')),
-    body: Center(child: child),
+  Widget _status(BuildContext context, Widget child) => _frame(
+    context,
+    child: SingleChildScrollView(
+      key: const ValueKey('bill-detail-scroll'),
+      padding: const EdgeInsets.all(32),
+      child: Center(heightFactor: 1, child: child),
+    ),
+  );
+
+  Widget _frame(
+    BuildContext context, {
+    required Widget child,
+    VoidCallback? onEdit,
+  }) => Column(
+    key: const ValueKey('bill-detail-sheet'),
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SizedBox(
+        height: 24,
+        child: Center(
+          child: Container(
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.outlineVariant,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(left: 20, right: 8, bottom: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                '账单详情',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            if (onEdit != null)
+              TextButton(onPressed: onEdit, child: const Text('修改')),
+            IconButton(
+              tooltip: '关闭详情',
+              onPressed: () {
+                if (ModalRoute.of(context)?.isCurrent != true) return;
+                Navigator.of(context).pop();
+              },
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        ),
+      ),
+      Flexible(fit: FlexFit.loose, child: child),
+    ],
   );
 
   Widget _amountCard(Bill bill, Account? acc, Account? toAcc) {
@@ -111,12 +199,16 @@ class BillDetailPage extends ConsumerWidget {
             style: const TextStyle(fontSize: 13, color: Colors.grey),
           ),
           const SizedBox(height: 6),
-          Text(
-            '$sign¥ ${centsToText(bill.amount)}',
-            style: TextStyle(
-              fontSize: 32,
-              fontWeight: FontWeight.bold,
-              color: amountColor,
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              '$sign¥ ${centsToText(bill.amount)}',
+              style: TextStyle(
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: amountColor,
+              ),
             ),
           ),
           const SizedBox(height: 6),

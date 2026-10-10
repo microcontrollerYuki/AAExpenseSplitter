@@ -225,9 +225,7 @@ class AccountInfoPage extends ConsumerWidget {
           color: inflow ? kIncomeColor : kExpenseColor,
         ),
       ),
-      onTap: () =>
-          Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => BillDetailPage(bill: b))),
+      onTap: () => showBillDetailSheet(context: context, bill: b),
     );
   }
 }

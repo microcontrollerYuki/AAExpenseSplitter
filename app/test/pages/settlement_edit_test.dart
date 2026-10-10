@@ -241,11 +241,7 @@ void main() {
       tester,
       Builder(
         builder: (context) => TextButton(
-          onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => BillDetailPage(bill: before),
-            ),
-          ),
+          onPressed: () => showBillDetailSheet(context: context, bill: before),
           child: const Text('测试首页'),
         ),
       ),
@@ -282,7 +278,12 @@ void main() {
 
     expect(find.byType(EditBillPage), findsNothing);
     expect(find.byType(BillDetailPage), findsOneWidget);
-    expect(find.text('测试首页'), findsNothing);
+    // Modal detail retains the underlying route; it must still be current.
+    expect(find.byType(BottomSheet), findsOneWidget);
+    expect(
+      ModalRoute.of(tester.element(find.byType(BillDetailPage)))!.isCurrent,
+      isTrue,
+    );
     expect(find.text('返回竞态也应保存'), findsOneWidget);
     _expectOnlyLocalFieldsChanged(
       before,

@@ -327,7 +327,13 @@ void main() {
     await pumpPage(tester, const BillsPage(), db: db);
     expect(find.textContaining('父0 / 共同子名'), findsOneWidget);
     await tap(tester, find.text('列表账单'));
-    expect(find.textContaining('父0 / 共同子名'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BillDetailPage),
+        matching: find.textContaining('父0 / 共同子名'),
+      ),
+      findsOneWidget,
+    );
     await tester.runAsync(
       () => db.upsertCategory(
         id: 'p0',
@@ -338,7 +344,13 @@ void main() {
       ),
     );
     await settleProviders(tester);
-    expect(find.textContaining('改名父 / 共同子名'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BillDetailPage),
+        matching: find.textContaining('改名父 / 共同子名'),
+      ),
+      findsOneWidget,
+    );
     Navigator.of(tester.element(find.text('账单详情'))).pop();
     await settleProviders(tester);
     expect(find.textContaining('改名父 / 共同子名'), findsOneWidget);

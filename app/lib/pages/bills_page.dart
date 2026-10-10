@@ -294,10 +294,7 @@ class _BillTileState extends ConsumerState<_BillTile> {
           setState(() => _dx = 0);
           return;
         }
-        // 进入只读详情，按下「修改」才可编辑（2026-10-06 需求）
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => BillDetailPage(bill: bill)),
-        );
+        showBillDetailSheet(context: context, bill: bill);
       },
     );
 

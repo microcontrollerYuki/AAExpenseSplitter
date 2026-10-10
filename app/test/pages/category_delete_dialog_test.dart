@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:aa_expense_splitter/data/app_database.dart';
+import 'package:aa_expense_splitter/pages/bill_detail_page.dart';
 import 'package:aa_expense_splitter/pages/categories_page.dart';
 import 'package:aa_expense_splitter/pages/bills_page.dart';
 import 'package:aa_expense_splitter/pages/edit_bill_page.dart';
@@ -541,7 +542,13 @@ void main() {
     await commitClick(tester, confirmation());
     Navigator.of(tester.element(find.text('分类管理'))).pop();
     await settleProviders(tester);
-    expect(find.textContaining('目标一级 / 目标二级'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(BillDetailPage),
+        matching: find.textContaining('目标一级 / 目标二级'),
+      ),
+      findsOneWidget,
+    );
     Navigator.of(tester.element(find.text('账单详情'))).pop();
     await settleProviders(tester);
     expect(find.textContaining('目标一级 / 目标二级'), findsOneWidget);
