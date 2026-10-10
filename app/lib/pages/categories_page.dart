@@ -132,7 +132,14 @@ class _KindList extends ConsumerWidget {
                   onReorderItem: (oldI, newI) =>
                       _reorder(context, ref, children, oldI, newI),
                   itemCount: children.length,
-                  itemBuilder: (_, j) => _tile(context, children[j], index: j),
+                  itemBuilder: (_, j) => _tile(
+                    context,
+                    children[j],
+                    index: j,
+                    canMove: !categories.any(
+                      (c) => c.parentId == children[j].id,
+                    ),
+                  ),
                 ),
               ),
           ],
@@ -167,6 +174,7 @@ class _KindList extends ConsumerWidget {
     int? index,
     bool isRoot = false,
     bool invalidHierarchy = false,
+    bool canMove = false,
   }) => ListTile(
     key: ValueKey('category-row-${c.id}'),
     leading: CircleAvatar(
@@ -202,6 +210,19 @@ class _KindList extends ConsumerWidget {
                     ),
                   ),
                 ),
+              if (canMove)
+                IconButton(
+                  key: ValueKey('category-move-${c.id}'),
+                  tooltip: '迁移到其他一级',
+                  icon: const Icon(Icons.drive_file_move_outline),
+                  onPressed: () => showDialog(
+                    context: context,
+                    builder: (_) => _CategoryMoveDialog(
+                      category: c,
+                      currentPath: CategoryHierarchy(categories).pathOf(c.id),
+                    ),
+                  ),
+                ),
               // 移动端长按手柄进入排序，普通滑动用于滚动。
               ReorderableDelayedDragStartListener(
                 key: ValueKey('category-drag-${c.id}'),
@@ -222,6 +243,136 @@ class _KindList extends ConsumerWidget {
       ),
     ),
   );
+}
+
+class _CategoryMoveDialog extends ConsumerStatefulWidget {
+  const _CategoryMoveDialog({
+    required this.category,
+    required this.currentPath,
+  });
+
+  final Category category;
+  final String currentPath;
+
+  @override
+  ConsumerState<_CategoryMoveDialog> createState() =>
+      _CategoryMoveDialogState();
+}
+
+class _CategoryMoveDialogState extends ConsumerState<_CategoryMoveDialog> {
+  String? _targetId;
+  String? _error;
+  bool _busy = false;
+
+  Future<void> _move() async {
+    final target = _targetId;
+    if (_busy || target == null) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      // 父级使用打开窗口时的快照，事务拒绝已被另一入口迁移的旧请求。
+      await ref.read(databaseProvider).moveSubcategory(
+        id: widget.category.id,
+        expectedParentId: widget.category.parentId!,
+        targetParentId: target,
+      );
+      if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+        Navigator.of(context).pop();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = e is StateError ? e.message : '迁移失败，请稍后重试');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(categoriesProvider);
+    final all = state.value ?? const <Category>[];
+    final parents = CategoryHierarchy(all)
+        .rootsOfKind(widget.category.kind)
+        .where((c) => c.parentId == null && c.id != widget.category.parentId)
+        .toList();
+    final targetAvailable = parents.any((c) => c.id == _targetId);
+    return AlertDialog(
+      scrollable: true,
+      title: const Text('迁移二级分类'),
+      content: SizedBox(
+        width: 340,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('当前分类：${widget.currentPath}'),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              key: const ValueKey('category-move-parent'),
+              initialValue: _targetId,
+              isExpanded: true,
+              decoration: const InputDecoration(labelText: '目标一级'),
+              hint: const Text('请选择一级分类'),
+              items: [
+                for (final c in parents)
+                  DropdownMenuItem(
+                    value: c.id,
+                    child: Text(
+                      c.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                if (_targetId != null && !targetAvailable)
+                  DropdownMenuItem(
+                    value: _targetId,
+                    enabled: false,
+                    child: const Text('目标一级已不可用'),
+                  ),
+              ],
+              onChanged: _busy || !state.hasValue || parents.isEmpty
+                  ? null
+                  : (id) => setState(() {
+                      _targetId = id;
+                      _error = null;
+                    }),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              state.hasError
+                  ? '分类读取失败，请关闭后重试'
+                  : !state.hasValue
+                  ? '正在读取分类'
+                  : parents.isEmpty
+                  ? '请先新增另一个同类型一级分类'
+                  : '迁移后保留该分类下的全部账单，追加到目标一级的末尾。',
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _busy || !state.hasValue || !targetAvailable ? null : _move,
+          child: const Text('迁移'),
+        ),
+      ],
+    );
+  }
 }
 
 class _CategoryEditDialog extends ConsumerStatefulWidget {

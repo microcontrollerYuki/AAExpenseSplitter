@@ -564,7 +564,7 @@ class AppDatabase extends _$AppDatabase {
       final all = await getAllCategories();
       final byId = {for (final c in all) c.id: c};
       final current = byId[id];
-      // 现有分类本版不可移动；省略父级时保留旧值。
+      // 普通编辑不改变归属；迁移二级分类须调用 moveSubcategory。
       final effectiveParent = parentId ?? current?.parentId;
       if (current != null &&
           (current.kind != kind || effectiveParent != current.parentId)) {
@@ -591,6 +591,56 @@ class AppDatabase extends _$AppDatabase {
         parentId: Value(effectiveParent),
       ));
     });
+
+  /// 迁移有效二级分类，仅改变父级与目标同级排序，保留全部账单引用。
+  Future<void> moveSubcategory({
+    required String id,
+    required String expectedParentId,
+    required String targetParentId,
+  }) => transaction(() async {
+    final all = await getAllCategories();
+    final byId = {for (final c in all) c.id: c};
+    final current = byId[id];
+    if (current == null || current.parentId == null ||
+        (current.kind != 0 && current.kind != 1)) {
+      throw StateError('只能迁移支出或收入的有效二级分类');
+    }
+    if (current.parentId != expectedParentId) {
+      throw StateError('分类归属已变化，请刷新后重试');
+    }
+    final sourceParent = byId[current.parentId];
+    if (sourceParent == null || sourceParent.id == current.id ||
+        sourceParent.parentId != null || sourceParent.kind != current.kind ||
+        all.any((c) => c.parentId == id)) {
+      throw StateError('分类归属异常，请刷新后重试');
+    }
+    final target = byId[targetParentId];
+    if (target == null || target.id == id || target.parentId != null ||
+        target.kind != current.kind) {
+      throw StateError('目标必须是同类型的有效一级分类');
+    }
+    if (target.id == current.parentId) {
+      throw StateError('请选择另一个一级分类');
+    }
+    final siblings = all.where((c) =>
+        c.kind == current.kind && c.parentId == target.id);
+    if (siblings.any((c) => c.name.trim() == current.name.trim())) {
+      throw StateError('目标一级下已有同名二级分类');
+    }
+    final lastSort = siblings.fold<int>(
+        -1, (value, c) => c.sort > value ? c.sort : value);
+    if (lastSort == 0x7FFFFFFFFFFFFFFF) {
+      throw StateError('目标排序已达到上限，请先重新排序后重试');
+    }
+    final changed = await (update(categories)
+          ..where((t) => t.id.equals(id) &
+              t.parentId.equals(expectedParentId)))
+        .write(CategoriesCompanion(
+          parentId: Value(target.id),
+          sort: Value(lastSort + 1),
+        ));
+    if (changed != 1) throw StateError('分类归属已变化，请刷新后重试');
+  });
 
   Future<void> deleteCategory(String id) => transaction(() async {
     final children = await (select(categories)
