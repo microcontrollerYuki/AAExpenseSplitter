@@ -913,6 +913,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
+        titleSpacing: 0,
         leading: IconButton(
           icon: const Icon(Icons.close),
           onPressed: () => Navigator.of(context).pop(),
@@ -1136,7 +1137,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         });
       },
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
         decoration: BoxDecoration(
           border: Border(
             bottom: BorderSide(
