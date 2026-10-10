@@ -247,36 +247,7 @@ class _CategoryCell extends StatelessWidget {
                             : Colors.transparent,
                       ),
                       alignment: Alignment.center,
-                      child: selected
-                          ? Text(emoji, style: const TextStyle(fontSize: 27))
-                          : ColorFiltered(
-                              colorFilter: const ColorFilter.matrix([
-                                0.2126,
-                                0.7152,
-                                0.0722,
-                                0,
-                                0,
-                                0.2126,
-                                0.7152,
-                                0.0722,
-                                0,
-                                0,
-                                0.2126,
-                                0.7152,
-                                0.0722,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0,
-                                0.65,
-                                0,
-                              ]),
-                              child: Text(
-                                emoji,
-                                style: const TextStyle(fontSize: 27),
-                              ),
-                            ),
+                      child: Text(emoji, style: const TextStyle(fontSize: 27)),
                     ),
                     if (hasChildren)
                       Positioned(
