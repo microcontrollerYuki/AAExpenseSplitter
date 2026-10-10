@@ -1009,7 +1009,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // 备注 | 大金额
-                  Row(
+                  LayoutBuilder(builder: (context, constraints) => Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       Expanded(
@@ -1027,19 +1027,27 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        _displayAmount,
-                        style: TextStyle(
-                            fontSize: 32,
-                            fontWeight: FontWeight.bold,
-                            color: amountColor),
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                            maxWidth: constraints.maxWidth * 0.65),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: Alignment.centerRight,
+                          child: Text(
+                            _displayAmount,
+                            style: TextStyle(
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
+                                color: amountColor),
+                          ),
+                        ),
                       ),
                       const SizedBox(width: 4),
                       const Text(' CNY',
                           style:
                               TextStyle(fontSize: 13, color: Colors.grey)),
                     ],
-                  ),
+                  )),
                   if (hints.isNotEmpty)
                     Container(
                       width: double.infinity,

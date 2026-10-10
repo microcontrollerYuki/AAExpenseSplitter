@@ -110,9 +110,12 @@ class _MonthSummary extends StatelessWidget {
           Text(label,
               style: const TextStyle(fontSize: 12, color: Colors.grey)),
           const SizedBox(height: 4),
-          Text(centsToText(cents, signed: signed),
-              style: TextStyle(
-                  fontSize: 16, fontWeight: FontWeight.w600, color: color)),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(centsToText(cents, signed: signed),
+                style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w600, color: color)),
+          ),
         ],
       ),
     );
@@ -169,9 +172,15 @@ class _DayGroup extends StatelessWidget {
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: Colors.black54)),
-              const Spacer(),
-              Text('支出 ${centsToText(dayExpense)}',
-                  style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Text('支出 ${centsToText(dayExpense)}',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                ),
+              ),
             ],
           ),
         ),
@@ -270,7 +279,7 @@ class _BillTileState extends ConsumerState<_BillTile> {
 
     final icon = isTransfer ? '🔁' : (cat?.emoji ?? '❓');
 
-    final tile = ListTile(
+    final tile = LayoutBuilder(builder: (context, constraints) => ListTile(
       leading: CircleAvatar(
         backgroundColor: Colors.grey.shade100,
         child: Text(icon, style: const TextStyle(fontSize: 19)),
@@ -285,9 +294,16 @@ class _BillTileState extends ConsumerState<_BillTile> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12)),
-      trailing: Text(trailing,
-          style: TextStyle(
-              fontSize: 15, fontWeight: FontWeight.w600, color: trailingColor)),
+      trailing: ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: constraints.maxWidth * 0.45),
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerRight,
+          child: Text(trailing,
+              style: TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w600, color: trailingColor)),
+        ),
+      ),
       onTap: () {
         // 已滑开时，点账单本体 = 收起按钮，不进入编辑
         if (_dx > 0) {
@@ -296,7 +312,7 @@ class _BillTileState extends ConsumerState<_BillTile> {
         }
         showBillDetailSheet(context: context, bill: bill);
       },
-    );
+    ));
 
     if (bill.aaGroupId != null) return tile;
 
