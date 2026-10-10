@@ -37,6 +37,12 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   bool _aaOn = false;
   bool _savingSettlement = false;
 
+  bool get _useDefaultCategory =>
+      widget.bill == null || widget.bill!.type != _type;
+
+  String? _selectedCategory(List<Category> categories) => categorySelection(
+      categories, _type, _categoryId, fallbackToRoot: _useDefaultCategory);
+
   bool get _isSettlementEdit {
     final b = widget.bill;
     return b != null &&
@@ -235,7 +241,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final accId = _accountId ?? (accounts.isNotEmpty ? accounts.first.id : '');
     final toId = _toAccountId ?? (accounts.length > 1 ? accounts[1].id : '');
 
-    final catId = categorySelection(categories, _type, _categoryId);
+    final catId = _selectedCategory(categories);
 
     if (cents <= 0) return _snack('请输入金额');
     if (accId.isEmpty) return _snack('请先在「我的 → 账户与资产」中创建账户');
@@ -270,6 +276,18 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     try {
       // 原始账单与共享组一起保存；遇到后台结算时不能留下部分改动。
       await db.transaction(() async {
+        final original = widget.bill;
+        if (original != null) {
+          final current = await (db.select(db.bills)
+                ..where((t) => t.id.equals(original.id)))
+              .getSingleOrNull();
+          if (current == null || current.deletedAt != null) {
+            throw StateError('账单已删除，请返回后重试');
+          }
+          if (current.categoryId != original.categoryId) {
+            throw StateError('账单分类已转移，请返回重新打开');
+          }
+        }
         await db.upsertBill(
           id: billId,
           type: _type,
@@ -674,8 +692,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             ? null
             : DateTime.fromMillisecondsSinceEpoch(result.detectedDateMs!),
         initialAccountId: accMatch ?? _accountId,
-        initialCategoryId:
-            categorySelection(categories, _type, catMatch ?? _categoryId),
+        initialCategoryId: catMatch == null
+            ? _selectedCategory(categories)
+            : categorySelection(categories, _type, catMatch),
         accounts: accounts,
         categories: categories,
         kind: _type,
@@ -878,7 +897,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final effAccountId =
         _accountId ?? (accounts.isNotEmpty ? accounts.first.id : null);
     final effToId = _toAccountId ?? (accounts.length > 1 ? accounts[1].id : null);
-    final effCatId = categorySelection(categories, _type, _categoryId);
+    final effCatId = _selectedCategory(categories);
 
     Account? selAcc;
     for (final a in accounts) {
@@ -975,6 +994,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                       categories: categories,
                       kind: _type,
                       selectedId: effCatId,
+                      fallbackToRoot: _useDefaultCategory,
                       onSelected: (id) => setState(() => _categoryId = id),
                       onManage: () => Navigator.of(context).push(
                         MaterialPageRoute(

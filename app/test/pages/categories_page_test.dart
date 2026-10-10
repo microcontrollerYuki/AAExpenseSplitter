@@ -43,6 +43,9 @@ void main() {
     await tester.tap(find.text('修改后'));
     await tester.pumpAndSettle();
     await act(tester, '删除');
+    await tester.tap(find.widgetWithText(ChoiceChip, '未分类'));
+    await tester.pumpAndSettle();
+    await act(tester, '确认转移并删除');
     expect(find.text('修改后'), findsNothing);
     expect(await db.getAllCategories(), isNot(contains(category)));
     await disposePage(tester, db);
@@ -66,7 +69,7 @@ void main() {
     await disposePage(tester, db);
   });
 
-  testWidgets('有子级的一级删除显示原因，不抛未处理异常', (tester) async {
+  testWidgets('有子级的一级删除列出范围，未确认前保留原组', (tester) async {
     final db = TestAppDatabase();
     await db.upsertCategory(
       id: 'parent',
@@ -87,8 +90,9 @@ void main() {
     await tester.tap(find.text('测试父级'));
     await tester.pumpAndSettle();
     await act(tester, '删除');
-    expect(find.text('请先删除该分类下的二级分类'), findsOneWidget);
-    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('同时删除以下二级分类：'), findsOneWidget);
+    expect(find.text('· 测试子级'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsNWidgets(2));
     expect(tester.takeException(), isNull);
     expect(
       (await db.getAllCategories()).where((c) => c.id == 'parent'),
@@ -97,7 +101,7 @@ void main() {
     await disposePage(tester, db);
   });
 
-  testWidgets('软删除账单仍阻止分类删除，页面显示明确提示', (tester) async {
+  testWidgets('删除范围显示软删除账单，确认之前不写库', (tester) async {
     final db = TestAppDatabase();
     await db.upsertBill(
       id: 'deleted',
@@ -112,8 +116,8 @@ void main() {
     await tester.tap(find.text('餐饮'));
     await tester.pumpAndSettle();
     await act(tester, '删除');
-    expect(find.text('该分类已有 1 笔账单（含已删除），无法删除（可改名继续用）'), findsOneWidget);
-    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.text('活跃账单 0 笔 · 已删除账单 1 笔'), findsOneWidget);
+    expect(find.byType(AlertDialog), findsNWidgets(2));
     expect(tester.takeException(), isNull);
     await disposePage(tester, db);
   });

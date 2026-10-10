@@ -6,6 +6,7 @@ import '../data/app_database.dart';
 import '../data/category_hierarchy.dart';
 import '../providers.dart';
 import '../theme.dart';
+import '../widgets/category_delete_dialog.dart';
 
 /// 支出 / 收入最多两级；一级拖动整个分组，二级只在自己的一级下排序。
 class CategoriesPage extends ConsumerWidget {
@@ -486,26 +487,26 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
     final id =
         widget.category?.id ?? 'cat_${const Uuid().v4().substring(0, 8)}';
     try {
-      final all = await db.getAllCategories();
-      if (widget.category != null && !all.any((c) => c.id == id)) {
-        throw StateError('该分类已被删除，请关闭后重试');
-      }
-      final siblings = all.where(
-        (c) => c.kind == widget.kind && c.parentId == _parentId,
-      );
-      final lastSort = siblings.fold<int>(
-        -1,
-        (value, c) => c.sort > value ? c.sort : value,
-      );
-      await db.upsertCategory(
-        id: id,
-        name: name,
-        emoji: _emoji,
-        kind: widget.kind,
-        sort: widget.category?.sort ?? lastSort + 1,
-        isPreset: widget.category?.isPreset ?? false,
-        parentId: _parentId,
-      );
+      await db.transaction(() async {
+        final all = await db.getAllCategories();
+        final siblings = all.where(
+          (c) => c.kind == widget.kind && c.parentId == _parentId,
+        );
+        final lastSort = siblings.fold<int>(
+          -1,
+          (value, c) => c.sort > value ? c.sort : value,
+        );
+        await db.upsertCategory(
+          id: id,
+          name: name,
+          emoji: _emoji,
+          kind: widget.kind,
+          sort: widget.category?.sort ?? lastSort + 1,
+          isPreset: widget.category?.isPreset ?? false,
+          parentId: _parentId,
+          expected: widget.category,
+        );
+      });
       _close();
     } catch (e) {
       if (mounted) {
@@ -526,6 +527,17 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
       _error = null;
     });
     try {
+      if (c.kind == 0 || c.kind == 1) {
+        final preview = await db.previewCategoryDeletion(c.id);
+        if (!mounted || ModalRoute.of(context)?.isCurrent != true) return;
+        final deleted = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => CategoryDeleteDialog(preview: preview),
+        );
+        if (deleted == true) _close();
+        return;
+      }
       final n = await db.billCountOfCategory(c.id);
       if (!mounted) return;
       if (n > 0) {
@@ -565,7 +577,7 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (widget.invalidHierarchy) const Text('分类归属异常，暂不可修改；未被引用时可以删除'),
+            if (widget.invalidHierarchy) const Text('分类归属异常，暂不可修改；请先检查分类归属'),
             if (widget.category == null && widget.kind != 2)
               DropdownButtonFormField<String>(
                 initialValue: _parentId ?? '',

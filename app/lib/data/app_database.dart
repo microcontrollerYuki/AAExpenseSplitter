@@ -613,6 +613,7 @@ class AppDatabase extends _$AppDatabase {
     required int sort,
     bool isPreset = false,
     String? parentId,
+    Category? expected,
   }) => transaction(() async {
       final cleanName = name.trim();
       if (id.isEmpty || cleanName.isEmpty) {
@@ -625,6 +626,9 @@ class AppDatabase extends _$AppDatabase {
       final all = await getAllCategories();
       final byId = {for (final c in all) c.id: c};
       final current = byId[id];
+      if (expected != null && current != expected) {
+        throw StateError('分类已变化，请关闭后重新打开');
+      }
       // 普通编辑不改变归属；迁移二级分类须调用 moveSubcategory。
       final effectiveParent = parentId ?? current?.parentId;
       if (current != null &&

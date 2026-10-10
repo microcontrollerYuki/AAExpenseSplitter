@@ -4,12 +4,18 @@ import '../data/app_database.dart';
 import '../data/category_hierarchy.dart';
 import '../theme.dart';
 
-/// 当前选择不再适用时只回退到一级，不猜测二级。
-String? categorySelection(List<Category> categories, int kind, String? id) {
+/// 新记账默认回退一级；旧账编辑可关闭回退以保留未分类，不猜测二级。
+String? categorySelection(
+  List<Category> categories,
+  int kind,
+  String? id, {
+  bool fallbackToRoot = true,
+}) {
   if (kind != 0 && kind != 1) return null;
   for (final c in categories) {
     if (c.id == id && c.kind == kind) return id;
   }
+  if (!fallbackToRoot) return null;
   final roots = CategoryHierarchy(categories).rootsOfKind(kind);
   return roots.isEmpty ? null : roots.first.id;
 }
@@ -23,6 +29,7 @@ class CategoryPicker extends StatefulWidget {
     required this.selectedId,
     required this.onSelected,
     this.onManage,
+    this.fallbackToRoot = true,
   });
 
   final List<Category> categories;
@@ -30,6 +37,7 @@ class CategoryPicker extends StatefulWidget {
   final String? selectedId;
   final ValueChanged<String> onSelected;
   final VoidCallback? onManage;
+  final bool fallbackToRoot;
 
   @override
   State<CategoryPicker> createState() => _CategoryPickerState();
@@ -52,6 +60,7 @@ class _CategoryPickerState extends State<CategoryPicker> {
       widget.categories,
       widget.kind,
       widget.selectedId,
+      fallbackToRoot: widget.fallbackToRoot,
     );
     final root = tree.rootOf(id);
     final selected = widget.categories.where((c) => c.id == id).firstOrNull;
@@ -81,6 +90,11 @@ class _CategoryPickerState extends State<CategoryPicker> {
         controller: _scroll,
         padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
         children: [
+          if (!widget.fallbackToRoot && id == null)
+            const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text('未分类，可点选分类'),
+            ),
           if (roots.isEmpty)
             const Padding(
               padding: EdgeInsets.all(12),

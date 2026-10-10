@@ -254,7 +254,7 @@ void main() {
     await disposePage(tester, db);
   });
 
-  testWidgets('先删未引用二级才能删一级，引用二级的软删除账单仍受保护', (tester) async {
+  testWidgets('整组及软删除引用展示后可取消，空二级明确确认后删除', (tester) async {
     final db = TestAppDatabase();
     await add(db, 'pa', '父甲');
     await add(db, 'a', '早餐', parent: 'pa');
@@ -275,21 +275,32 @@ void main() {
     expect(
       find.descendant(
         of: find.byType(AlertDialog),
-        matching: find.text('请先删除该分类下的二级分类'),
+        matching: find.text('确认删除一级及全部 2 个二级分类'),
       ),
       findsOneWidget,
     );
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
+    await tester.runAsync(() async {
+      await tester.tap(find.text('取消').last);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await settleProviders(tester);
+    await save(tester, action: '取消');
     await tester.tap(find.text('早餐'));
     await tester.pumpAndSettle();
     await save(tester, action: '删除');
-    expect(find.text('该分类已有 1 笔账单（含已删除），无法删除（可改名继续用）'), findsOneWidget);
-    await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
+    expect(find.text('活跃账单 0 笔 · 已删除账单 1 笔'), findsOneWidget);
+    await tester.runAsync(() async {
+      await tester.tap(find.text('取消').last);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await settleProviders(tester);
+    await save(tester, action: '取消');
     await tester.tap(find.text('空二级'));
     await tester.pumpAndSettle();
     await save(tester, action: '删除');
+    await tester.tap(find.widgetWithText(ChoiceChip, '未分类'));
+    await tester.pumpAndSettle();
+    await save(tester, action: '确认转移并删除');
     expect((await db.getAllCategories()).where((c) => c.id == 'free'), isEmpty);
     expect(
       (await db.getAllCategories()).where((c) => c.id == 'a'),

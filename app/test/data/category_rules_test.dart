@@ -36,6 +36,48 @@ void main() {
   });
   tearDown(() => db.close());
 
+  test('带预期快照的分类编辑拒绝已删除或已改名记录，不重建或覆盖', () async {
+    await addCategory(db, 'editing', '原分类');
+    final original = (await db.getAllCategories()).singleWhere(
+      (c) => c.id == 'editing',
+    );
+    await db.upsertCategory(
+      id: original.id,
+      name: '最新分类',
+      emoji: '☕',
+      kind: original.kind,
+      sort: original.sort,
+      expected: original,
+    );
+    final renamed = await categoryRows(db);
+    await expectLater(
+      db.upsertCategory(
+        id: original.id,
+        name: '旧窗口',
+        emoji: '🍜',
+        kind: original.kind,
+        sort: original.sort,
+        expected: original,
+      ),
+      throwsStateError,
+    );
+    expect(await categoryRows(db), renamed);
+    await db.deleteCategory(original.id);
+    final deleted = await categoryRows(db);
+    await expectLater(
+      db.upsertCategory(
+        id: original.id,
+        name: '不能重建',
+        emoji: '🍜',
+        kind: original.kind,
+        sort: original.sort,
+        expected: original,
+      ),
+      throwsStateError,
+    );
+    expect(await categoryRows(db), deleted);
+  });
+
   for (final kind in [0, 1]) {
     test('类型 $kind 的父子分类改名换图标保留父级并规范名称', () async {
       await addCategory(db, 'parent', '父级', kind: kind);
