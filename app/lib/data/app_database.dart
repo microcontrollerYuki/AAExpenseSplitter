@@ -9,6 +9,59 @@ import 'presets.dart';
 
 part 'app_database.g.dart';
 
+/// 删除确认窗口的完整快照；范围不包含二级源的父级，列表不可修改。
+class CategoryDeletePreview {
+  CategoryDeletePreview._({
+    required this.sourceId,
+    required List<Category> categories,
+    required List<Bill> bills,
+    this._sourceParent,
+  }) : categories = List<Category>.unmodifiable(categories),
+       bills = List<Bill>.unmodifiable(bills);
+
+  final String sourceId;
+  final List<Category> categories;
+  final List<Bill> bills;
+  final Category? _sourceParent;
+
+  int get activeBillCount => bills.where((b) => b.deletedAt == null).length;
+  int get deletedBillCount => bills.length - activeBillCount;
+}
+
+enum _CategoryDeleteDestinationKind { existing, create, uncategorized }
+
+/// 删除分类时互斥的三个去向。已有二级及新建二级须提供父级快照。
+class CategoryDeleteDestination {
+  const CategoryDeleteDestination.existing(Category this.category, {this.parent})
+      : _kind = _CategoryDeleteDestinationKind.existing,
+        id = null,
+        name = null,
+        emoji = null;
+
+  const CategoryDeleteDestination.create({
+    required String this.id,
+    required String this.name,
+    required String this.emoji,
+    this.parent,
+  }) : _kind = _CategoryDeleteDestinationKind.create,
+       category = null;
+
+  const CategoryDeleteDestination.uncategorized()
+      : _kind = _CategoryDeleteDestinationKind.uncategorized,
+        category = null,
+        parent = null,
+        id = null,
+        name = null,
+        emoji = null;
+
+  final _CategoryDeleteDestinationKind _kind;
+  final Category? category;
+  final Category? parent;
+  final String? id;
+  final String? name;
+  final String? emoji;
+}
+
 /// 账户：type 0 现金 / 1 银行卡 / 2 信用卡 / 3 虚拟(微信/支付宝) / 4 AA挂账(M2)
 class Accounts extends Table {
   TextColumn get id => text()();
@@ -275,6 +328,14 @@ class AppDatabase extends _$AppDatabase {
   }) =>
       transaction(() async {
         await _checkAaBillNotSettled(id);
+        if (categoryId != null) {
+          final category = await (select(categories)
+                ..where((t) => t.id.equals(categoryId)))
+              .getSingleOrNull();
+          if (category == null) {
+            throw StateError('所选分类已删除，请重新选择');
+          }
+        }
         final now = DateTime.now().millisecondsSinceEpoch;
         await into(bills).insertOnConflictUpdate(BillsCompanion(
           id: Value(id),
@@ -640,6 +701,208 @@ class AppDatabase extends _$AppDatabase {
           sort: Value(lastSort + 1),
         ));
     if (changed != 1) throw StateError('分类归属已变化，请刷新后重试');
+  });
+
+  Future<CategoryDeletePreview> previewCategoryDeletion(String id) =>
+      transaction(() => _readCategoryDeletePreview(id));
+
+  Future<CategoryDeletePreview> _readCategoryDeletePreview(String id,
+      {List<Category>? allCategories}) async {
+    final all = allCategories ?? await getAllCategories();
+    final byId = {for (final c in all) c.id: c};
+    final source = byId[id];
+    if (source == null) throw StateError('该分类已删除，请刷新后重试');
+    if (source.kind != 0 && source.kind != 1) {
+      throw StateError('仅支持删除支出或收入分类');
+    }
+    final children = all.where((c) => c.parentId == id).toList();
+    Category? sourceParent;
+    if (source.parentId != null) {
+      sourceParent = byId[source.parentId];
+      if (sourceParent == null || sourceParent.id == id ||
+          sourceParent.parentId != null || sourceParent.kind != source.kind ||
+          children.isNotEmpty) {
+        throw StateError('分类归属异常，暂不能删除');
+      }
+    } else {
+      final childIds = children.map((c) => c.id).toSet();
+      if (children.any((c) => c.kind != source.kind) ||
+          all.any((c) => childIds.contains(c.parentId))) {
+        throw StateError('分类归属异常，暂不能删除');
+      }
+    }
+    final scope = [source, ...children]
+      ..sort((a, b) => a.id.compareTo(b.id));
+    final scopeIds = scope.map((c) => c.id).toSet();
+    final references = await (select(bills)
+          ..where((t) => t.categoryId.isIn(scopeIds))
+          ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+        .get();
+    return CategoryDeletePreview._(
+      sourceId: id,
+      categories: scope,
+      bills: references,
+      sourceParent: sourceParent,
+    );
+  }
+
+  bool _sameCategoryDeleteRows<T>(List<T> before, List<T> after) {
+    if (before.length != after.length) return false;
+    for (var i = 0; i < before.length; i++) {
+      if (before[i] != after[i]) return false;
+    }
+    return true;
+  }
+
+  Category _categoryDeleteTargetParent(Category snapshot,
+      Map<String, Category> byId, int kind, Set<String> deletingIds) {
+    final parent = byId[snapshot.id];
+    if (parent != snapshot) {
+      throw StateError('目标一级已变化，请重新选择');
+    }
+    if (parent == null || parent.parentId != null || parent.kind != kind ||
+        deletingIds.contains(parent.id)) {
+      throw StateError('目标父级必须是同类型有效一级分类');
+    }
+    return parent;
+  }
+
+  Future<void> _checkCategoryDeleteBillsMutable(List<Bill> references) async {
+    final groups = {for (final g in await getAllAaGroups()) g.id: g};
+    for (final bill in references) {
+      if (bill.settlementId != null) {
+        throw StateError('结算账单分类不可更改，请保留该分类');
+      }
+      final groupId = bill.aaGroupId;
+      if (groupId == null) {
+        if (bill.isAa) throw StateError('账单 AA 关联异常，暂不能转移分类');
+        continue;
+      }
+      final group = groups[groupId];
+      if (group == null) throw StateError('账单 AA 关联异常，暂不能转移分类');
+      if (group.settled || group.settlementId != null) {
+        throw StateError('该 AA 账单已结算，不能再修改');
+      }
+      if (!bill.isAa) throw StateError('账单 AA 关联异常，暂不能转移分类');
+      if (bill.type != 0) {
+        throw StateError('AA 内部往来账单分类不可更改，请保留该分类');
+      }
+    }
+  }
+
+  /// 校验完整确认快照后原子转移引用并删除分类；账单只改 categoryId。
+  /// 不更新历史时间、金额、AA 关联或同步快照，软删除引用也必须转移。
+  Future<void> deleteCategoryAndReassign({
+    required CategoryDeletePreview expected,
+    required CategoryDeleteDestination destination,
+    bool confirmWholeGroup = false,
+  }) => transaction(() async {
+    final all = await getAllCategories();
+    final byId = {for (final c in all) c.id: c};
+    final current = await _readCategoryDeletePreview(expected.sourceId,
+        allCategories: all);
+    if (!_sameCategoryDeleteRows(expected.categories, current.categories) ||
+        !_sameCategoryDeleteRows(expected.bills, current.bills) ||
+        expected._sourceParent != current._sourceParent) {
+      throw StateError('分类或账单已变化，请重新确认删除范围');
+    }
+    if (current.categories.length > 1 && !confirmWholeGroup) {
+      throw StateError('请明确确认删除一级及其全部二级分类');
+    }
+    await _checkCategoryDeleteBillsMutable(current.bills);
+    final source = byId[current.sourceId]!;
+    final deletingIds = current.categories.map((c) => c.id).toSet();
+    String? targetId;
+    CategoriesCompanion? newCategory;
+    switch (destination._kind) {
+      case _CategoryDeleteDestinationKind.uncategorized:
+        targetId = null;
+        break;
+      case _CategoryDeleteDestinationKind.existing:
+        final snapshot = destination.category!;
+        final target = byId[snapshot.id];
+        if (target != snapshot) {
+          throw StateError('目标分类已变化，请重新选择');
+        }
+        if (target == null || target.kind != source.kind ||
+            deletingIds.contains(target.id)) {
+          throw StateError('目标必须是同类型且不在删除范围内的分类');
+        }
+        if (target.parentId == null) {
+          if (destination.parent != null) {
+            throw StateError('目标父级快照与分类归属不符，请重新选择');
+          }
+        } else {
+          final parentSnapshot = destination.parent;
+          if (parentSnapshot == null || parentSnapshot.id != target.parentId) {
+            throw StateError('请选择二级目标的有效一级分类');
+          }
+          _categoryDeleteTargetParent(parentSnapshot, byId,
+              source.kind, deletingIds);
+        }
+        targetId = target.id;
+        break;
+      case _CategoryDeleteDestinationKind.create:
+        final id = destination.id!;
+        final name = destination.name!.trim();
+        if (id.trim().isEmpty) throw StateError('新分类 ID 无效');
+        if (byId.containsKey(id)) {
+          throw StateError('新分类 ID 已存在，请重新创建');
+        }
+        if (name.isEmpty) throw StateError('请填写分类名称');
+        if (name.contains(' / ')) {
+          throw StateError('分类名称不能包含路径分隔符「 / 」');
+        }
+        String? parentId;
+        final parentSnapshot = destination.parent;
+        if (parentSnapshot != null) {
+          parentId = _categoryDeleteTargetParent(parentSnapshot, byId,
+              source.kind, deletingIds).id;
+        }
+        final siblings = all.where((c) =>
+            c.kind == source.kind && c.parentId == parentId);
+        if (siblings.any((c) => c.name.trim() == name)) {
+          throw StateError('同级已有同名分类');
+        }
+        final lastSort = siblings.fold<int>(
+            -1, (value, c) => c.sort > value ? c.sort : value);
+        if (lastSort == 0x7FFFFFFFFFFFFFFF) {
+          throw StateError('目标排序已达到上限，请先重新排序后重试');
+        }
+        newCategory = CategoriesCompanion.insert(
+          id: id,
+          name: name,
+          emoji: destination.emoji!,
+          kind: source.kind,
+          parentId: Value(parentId),
+          sort: Value(lastSort + 1),
+          isPreset: const Value(false),
+        );
+        targetId = id;
+        break;
+    }
+    if (newCategory != null) await into(categories).insert(newCategory);
+    final changed = await (update(bills)
+          ..where((t) => t.categoryId.isIn(deletingIds)))
+        .write(BillsCompanion(categoryId: Value<String?>(targetId)));
+    if (changed != current.bills.length) {
+      throw StateError('分类账单已变化，请重新确认删除范围');
+    }
+    final removed = await (delete(categories)
+          ..where((t) => t.id.isIn(deletingIds)))
+        .go();
+    if (removed != current.categories.length) {
+      throw StateError('分类已变化，请重新确认删除范围');
+    }
+    final remainingReference = await (select(bills)
+          ..where((t) => t.categoryId.isIn(deletingIds))..limit(1))
+        .getSingleOrNull();
+    final remainingCategory = await (select(categories)
+          ..where((t) => t.id.isIn(deletingIds))..limit(1))
+        .getSingleOrNull();
+    if (remainingReference != null || remainingCategory != null) {
+      throw StateError('分类引用已变化，删除已回滚，请重新确认');
+    }
   });
 
   Future<void> deleteCategory(String id) => transaction(() async {

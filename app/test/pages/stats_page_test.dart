@@ -33,7 +33,10 @@ void main() {
     await add('b1', 'cat_food', 8800, 1);
     await add('b2', 'cat_food', 1200, 2); // 同类累加
     await add('b3', 'cat_transport', 3000, 3);
-    await add('b4', 'ghost_cat', 500, 4); // 未知分类 → 未分类
+    await add('b4', null, 500, 4);
+    // 模拟历史坏引用；正常保存接口已禁止写入不存在的分类。
+    await db.customStatement(
+        'UPDATE bills SET category_id = ? WHERE id = ?', ['ghost_cat', 'b4']);
     await add('b5', null, 100, 5); // 无分类 → 未分类
 
     await pumpPage(tester, const StatsPage(), db: db);

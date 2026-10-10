@@ -480,6 +480,11 @@ class AaSyncService {
     return null;
   }
 
+  static String? _existingCategoryId(
+      List<Category> categories, String id, int kind) {
+    return categories.any((c) => c.id == id && c.kind == kind) ? id : null;
+  }
+
   /// 结算账户偏好（[settle] 选定后保存；导入伙伴结算时沿用）
   static const kAaSettleAccountKey = 'aaSettleAccountId';
 
@@ -516,9 +521,9 @@ class AaSyncService {
         id: const Uuid().v4(),
         type: iAmPayer ? 1 : 0,
         categoryId: iAmPayer
-            ? 'inc_other'
+            ? _existingCategoryId(categories, 'inc_other', 1)
             : (guessCategoryForName(g.categoryName, categories) ??
-                'cat_other_exp'),
+                _existingCategoryId(categories, 'cat_other_exp', 0)),
         amount: share,
         accountId: accountId,
         dateMs: g.dateMs,
@@ -552,11 +557,13 @@ class AaSyncService {
     }
     // 兜底：没有分摊组明细（旧版本结算）→ 按净额记一笔收入/支出
     final iReceive = receiverUid == myUid;
+    final categories = await _db.getAllCategories();
     await _db.upsertBill(
       id: const Uuid().v4(),
       type: iReceive ? 1 : 0,
       amount: amount,
-      categoryId: iReceive ? 'inc_other' : 'cat_other_exp',
+      categoryId: _existingCategoryId(
+          categories, iReceive ? 'inc_other' : 'cat_other_exp', iReceive ? 1 : 0),
       accountId: accountId,
       dateMs: dateMs,
       note: 'AA平分：结算',

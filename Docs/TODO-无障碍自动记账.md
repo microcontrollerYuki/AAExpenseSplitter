@@ -136,7 +136,7 @@ adb -s emulator-5554 install -r build/app/outputs/flutter-apk/app-debug.apk
 adb -s emulator-5556 install -r build/app/outputs/flutter-apk/app-debug.apk
 ```
 
-专项按受影响文件运行；原生测试目录和命令在 P0-01 / P3 首次接入时落实。当前 Flutter 回归基线 291 条、约 23 秒；独立测试 App 另有 19 条标准库样例 / 源码隔离检查，命令见其 README，不能代替设备或 OCR 测试。后续以每轮实际结果为准。文档类小点检查内容、引用与代码事实，复跑现有短回归并验证当前 APK 基线；未实现的功能测试只列计划，不记作已通过。
+专项按受影响文件运行；原生测试目录和命令在 P0-01 / P3 首次接入时落实。当前 Flutter 回归基线 319 条、约 24 秒；独立测试 App 另有 19 条标准库样例 / 源码隔离检查，命令见其 README，不能代替设备或 OCR 测试。后续以每轮实际结果为准。文档类小点检查内容、引用与代码事实，复跑现有短回归并验证当前 APK 基线；未实现的功能测试只列计划，不记作已通过。
 
 ## 当前验证环境与能力边界
 
