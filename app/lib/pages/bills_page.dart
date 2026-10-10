@@ -16,6 +16,7 @@ class BillsPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final month = ref.watch(selectedMonthProvider);
     final billsAsync = ref.watch(monthBillsProvider);
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final categories = ref.watch(categoriesProvider).value ?? const <Category>[];
@@ -68,6 +69,7 @@ class BillsPage extends ConsumerWidget {
                       .add(b);
                 }
                 return ListView.builder(
+                  key: ValueKey('bills-${month.year}-${month.month}'),
                   padding: const EdgeInsets.only(bottom: 88),
                   itemCount: grouped.length,
                   itemBuilder: (_, i) {

@@ -55,6 +55,7 @@ class StatsPage extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(title: const MonthBar(), centerTitle: true),
       body: ListView(
+        key: ValueKey('stats-${m.year}-${m.month}'),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),
         children: [
           _CategoryPieCard(

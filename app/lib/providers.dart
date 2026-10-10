@@ -21,7 +21,15 @@ final metaProvider = StreamProvider<Map<String, String>>((ref) => ref
 /// 全局选中的月份（明细页 / 图表页共享），1 号作为锚点
 class SelectedMonthNotifier extends Notifier<DateTime> {
   @override
-  DateTime build() => DateTime.now();
+  DateTime build() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, 1);
+  }
+
+  void selectMonth(DateTime month) {
+    final selected = DateTime(month.year, month.month, 1);
+    if (state != selected) state = selected;
+  }
 
   void shift(int delta) => state = DateTime(state.year, state.month + delta, 1);
 }
