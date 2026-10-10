@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/app_database.dart';
+import '../data/category_hierarchy.dart';
 import '../providers.dart';
 import '../theme.dart';
 import '../utils/money.dart';
@@ -225,6 +226,8 @@ class _BillTileState extends ConsumerState<_BillTile> {
   Widget build(BuildContext context) {
     final bill = widget.bill;
     final cat = bill.categoryId == null ? null : widget.catBy[bill.categoryId];
+    final categoryPath =
+        CategoryHierarchy(widget.catBy.values).pathOf(bill.categoryId);
     final acc = widget.accBy[bill.accountId];
     final toAcc =
         bill.toAccountId == null ? null : widget.accBy[bill.toAccountId];
@@ -239,13 +242,13 @@ class _BillTileState extends ConsumerState<_BillTile> {
       // AA 支出账单按设计图标为「AA平分：项目」；份额账单已带 AA 语义备注则不重复前缀
       final baseTitle = bill.note.isNotEmpty
           ? bill.note
-          : (cat?.name ?? '未分类');
+          : categoryPath;
       title = (bill.isAa &&
               bill.type == 0 &&
               !baseTitle.startsWith('AA'))
           ? 'AA平分：$baseTitle'
           : baseTitle;
-      subtitle = [if (cat != null) cat.name, acc?.name ?? '']
+      subtitle = [categoryPath, acc?.name ?? '']
           .where((s) => s.isNotEmpty)
           .join(' · ');
     }

@@ -4,12 +4,14 @@ import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/app_database.dart';
+import '../data/category_hierarchy.dart';
 import '../data/presets.dart';
 import '../providers.dart';
 import '../recognition/bill_ocr.dart';
 import '../sync/aa_sync_service.dart';
 import '../theme.dart';
 import '../utils/money.dart';
+import '../widgets/category_picker.dart';
 import '../widgets/number_pad.dart';
 import 'categories_page.dart';
 
@@ -233,15 +235,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final accId = _accountId ?? (accounts.isNotEmpty ? accounts.first.id : '');
     final toId = _toAccountId ?? (accounts.length > 1 ? accounts[1].id : '');
 
-    String? catId = _categoryId;
-    if (_type != 2 && catId == null) {
-      for (final c in categories) {
-        if (c.kind == _type) {
-          catId = c.id;
-          break;
-        }
-      }
-    }
+    final catId = categorySelection(categories, _type, _categoryId);
 
     if (cents <= 0) return _snack('请输入金额');
     if (accId.isEmpty) return _snack('请先在「我的 → 账户与资产」中创建账户');
@@ -649,8 +643,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     };
     for (final e in table.entries) {
       if (RegExp(e.value, caseSensitive: false).hasMatch(text)) {
-        for (final c in categories) {
-          if (c.kind == 0 && c.name == e.key) return c.id;
+        for (final c in CategoryHierarchy(categories).rootsOfKind(_type)) {
+          if (_type == 0 && c.name == e.key) return c.id;
         }
       }
     }
@@ -680,7 +674,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             ? null
             : DateTime.fromMillisecondsSinceEpoch(result.detectedDateMs!),
         initialAccountId: accMatch ?? _accountId,
-        initialCategoryId: catMatch ?? _categoryId,
+        initialCategoryId:
+            categorySelection(categories, _type, catMatch ?? _categoryId),
         accounts: accounts,
         categories: categories,
         kind: _type,
@@ -798,7 +793,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             ),
             const SizedBox(height: 12),
             Text(
-              '分类：${category == null ? '—' : '${category.emoji} ${category.name}'}',
+              '分类：${category == null ? '—' : '${category.emoji} ${CategoryHierarchy(categories).pathOf(category.id)}'}',
             ),
             const SizedBox(height: 8),
             Text(
@@ -883,15 +878,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final effAccountId =
         _accountId ?? (accounts.isNotEmpty ? accounts.first.id : null);
     final effToId = _toAccountId ?? (accounts.length > 1 ? accounts[1].id : null);
-    String? effCatId = _categoryId;
-    if (effCatId == null) {
-      for (final c in categories) {
-        if (c.kind == _type) {
-          effCatId = c.id;
-          break;
-        }
-      }
-    }
+    final effCatId = categorySelection(categories, _type, _categoryId);
 
     Account? selAcc;
     for (final a in accounts) {
@@ -982,29 +969,16 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             Expanded(
               child: isTransfer
                   ? const SizedBox.shrink()
-                  : GridView.count(
-                      crossAxisCount: 5,
-                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-                      childAspectRatio: 0.92,
-                      mainAxisSpacing: 2,
-                      children: [
-                        for (final c in categories.where((c) => c.kind == _type))
-                          _CategoryCell(
-                            emoji: c.emoji,
-                            name: c.name,
-                            selected: c.id == effCatId,
-                            onTap: () => setState(() => _categoryId = c.id),
-                          ),
-                        _CategoryCell(
-                          emoji: '⚙️',
-                          name: '管理',
-                          selected: false,
-                          onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                                builder: (_) => const CategoriesPage()),
-                          ),
-                        ),
-                      ],
+                  : CategoryPicker(
+                      key: ValueKey('category-picker-$_type'),
+                      categories: categories,
+                      kind: _type,
+                      selectedId: effCatId,
+                      onSelected: (id) => setState(() => _categoryId = id),
+                      onManage: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) => const CategoriesPage()),
+                      ),
                     ),
             ),
             Container(
@@ -1155,7 +1129,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           _snack('AA 账单类型不可变更');
           return;
         }
-        setState(() => _type = t);
+        if (_type == t) return;
+        setState(() {
+          _type = t;
+          _categoryId = null;
+        });
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -1174,52 +1152,6 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             color: selected ? Colors.black87 : Colors.grey,
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// 分类宫格单元（5列，圆形底 + 下方标签）
-class _CategoryCell extends StatelessWidget {
-  const _CategoryCell({
-    required this.emoji,
-    required this.name,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String emoji;
-  final String name;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          CircleAvatar(
-            radius: 23,
-            backgroundColor: selected
-                ? kPrimaryColor.withValues(alpha: 0.15)
-                : Colors.grey.shade100,
-            child: Text(emoji, style: const TextStyle(fontSize: 22)),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 12,
-              color: selected ? kPrimaryColor : Colors.black87,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -1266,7 +1198,7 @@ class _AaLockedView extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('${cat?.emoji ?? '🤝'} ${cat?.name ?? 'AA'}',
+                  Text('${cat?.emoji ?? '🤝'} ${CategoryHierarchy(categories).pathOf(bill.categoryId)}',
                       style: const TextStyle(
                           fontSize: 16, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
@@ -1564,69 +1496,15 @@ class _OcrSheetState extends State<_OcrSheet> {
             _row(
               Icons.category,
               '分类',
-              cat == null ? '未选择' : '${cat.emoji} ${cat.name}',
+              cat == null ? '未选择' : '${cat.emoji} ${CategoryHierarchy(widget.categories).pathOf(cat.id)}',
               () async {
-                final cats = widget.categories
-                    .where((c) => c.kind == widget.kind)
-                    .toList();
-                final id = await showModalBottomSheet<String>(
+                final id = await showCategoryPicker(
                   context: context,
-                  builder: (bctx) => SafeArea(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: Text('选择分类',
-                                style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600))),
-                        SizedBox(
-                          height: 200,
-                          child: GridView.count(
-                            crossAxisCount: 5,
-                            padding:
-                                const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                            childAspectRatio: 0.95,
-                            children: [
-                              for (final c in cats)
-                                InkWell(
-                                  borderRadius: BorderRadius.circular(10),
-                                  onTap: () => Navigator.pop(bctx, c.id),
-                                  child: Column(
-                                    mainAxisAlignment:
-                                        MainAxisAlignment.center,
-                                    children: [
-                                      CircleAvatar(
-                                        radius: 22,
-                                        backgroundColor:
-                                            c.id == _selCatId
-                                                ? kPrimaryColor
-                                                    .withValues(alpha: 0.15)
-                                                : Colors.grey.shade100,
-                                        child: Text(c.emoji,
-                                            style: const TextStyle(
-                                                fontSize: 21)),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(c.name,
-                                          style: TextStyle(
-                                              fontSize: 12,
-                                              color: c.id == _selCatId
-                                                  ? kPrimaryColor
-                                                  : Colors.black87)),
-                                    ],
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  categories: widget.categories,
+                  kind: widget.kind,
+                  selectedId: _selCatId,
                 );
-                if (id != null) setState(() => _selCatId = id);
+                if (id != null && mounted) setState(() => _selCatId = id);
               },
             ),
             const Divider(height: 20),

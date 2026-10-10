@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/app_database.dart';
+import '../data/category_hierarchy.dart';
 import '../providers.dart';
 import '../theme.dart';
 import '../utils/money.dart';
@@ -75,7 +76,10 @@ class BillDetailPage extends ConsumerWidget {
         children: [
           _amountCard(bill, acc, toAcc),
           const SizedBox(height: 12),
-          _infoCard(bill, cat, acc, toAcc, isAa, isSettlement),
+          _infoCard(
+            bill, cat, CategoryHierarchy(categories).pathOf(bill.categoryId),
+            acc, toAcc, isAa, isSettlement,
+          ),
         ],
       ),
     );
@@ -130,6 +134,7 @@ class BillDetailPage extends ConsumerWidget {
   Widget _infoCard(
     Bill bill,
     Category? cat,
+    String categoryPath,
     Account? acc,
     Account? toAcc,
     bool isAa,
@@ -139,7 +144,7 @@ class BillDetailPage extends ConsumerWidget {
     String two(int v) => v.toString().padLeft(2, '0');
 
     final rows = <Widget>[
-      _row('分类', cat == null ? '—' : '${cat.emoji} ${cat.name}'),
+      _row('分类', cat == null ? categoryPath : '${cat.emoji} $categoryPath'),
       _row('账户', acc == null ? '—' : '${acc.emoji} ${acc.name}'),
       if (bill.type == 2)
         _row('转入账户', toAcc == null ? '—' : '${toAcc.emoji} ${toAcc.name}'),
