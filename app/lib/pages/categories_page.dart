@@ -80,11 +80,18 @@ class _KindList extends ConsumerWidget {
     }
     return ReorderableListView.builder(
       padding: const EdgeInsets.only(bottom: 88),
-      onReorderItem: (oldI, newI) {
+      onReorderItem: (oldI, newI) async {
         final ids = [for (final c in list) c.id];
         final moved = ids.removeAt(oldI);
         ids.insert(newI, moved);
-        ref.read(databaseProvider).reorderCategories(ids);
+        try {
+          await ref.read(databaseProvider).reorderCategories(ids);
+        } on StateError catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text(e.message)));
+          }
+        }
       },
       itemCount: list.length,
       itemBuilder: (_, i) {
@@ -167,6 +174,8 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
         isPreset: false,
       );
       if (mounted) Navigator.of(context).pop();
+    } on StateError catch (e) {
+      if (mounted) _snack(e.message);
     } catch (e) {
       if (mounted) _snack('保存失败：$e');
     }
@@ -176,13 +185,20 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
     final c = widget.category;
     if (c == null) return;
     final db = ref.read(databaseProvider);
-    final n = await db.billCountOfCategory(c.id);
-    if (n > 0) {
-      _snack('该分类已有 $n 笔账单，无法删除（可改名继续用）');
-      return;
+    try {
+      final n = await db.billCountOfCategory(c.id);
+      if (!mounted) return;
+      if (n > 0) {
+        _snack('该分类已有 $n 笔账单（含已删除），无法删除（可改名继续用）');
+        return;
+      }
+      await db.deleteCategory(c.id);
+      if (mounted) Navigator.of(context).pop();
+    } on StateError catch (e) {
+      if (mounted) _snack(e.message);
+    } catch (e) {
+      if (mounted) _snack('删除失败：$e');
     }
-    await db.deleteCategory(c.id);
-    if (mounted) Navigator.of(context).pop();
   }
 
   @override

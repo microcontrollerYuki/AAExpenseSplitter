@@ -552,33 +552,84 @@ class AppDatabase extends _$AppDatabase {
     required int sort,
     bool isPreset = false,
     String? parentId,
-  }) =>
-      into(categories).insertOnConflictUpdate(CategoriesCompanion(
+  }) => transaction(() async {
+      final cleanName = name.trim();
+      if (id.isEmpty || cleanName.isEmpty) {
+        throw StateError('请填写分类名称');
+      }
+      if (cleanName.contains(' / ')) {
+        throw StateError('分类名称不能包含路径分隔符「 / 」');
+      }
+      if (kind < 0 || kind > 2) throw StateError('分类类型无效');
+      final all = await getAllCategories();
+      final byId = {for (final c in all) c.id: c};
+      final current = byId[id];
+      // 现有分类本版不可移动；省略父级时保留旧值。
+      final effectiveParent = parentId ?? current?.parentId;
+      if (current != null &&
+          (current.kind != kind || effectiveParent != current.parentId)) {
+        throw StateError('已有分类不能更换类型或父级');
+      }
+      if (effectiveParent != null) {
+        final parent = byId[effectiveParent];
+        if (effectiveParent == id || kind == 2 || parent == null ||
+            parent.parentId != null || parent.kind != kind) {
+          throw StateError('二级分类必须属于同类型的有效一级分类');
+        }
+      }
+      if (all.any((c) => c.id != id && c.kind == kind &&
+          c.parentId == effectiveParent && c.name.trim() == cleanName)) {
+        throw StateError('同级已有同名分类');
+      }
+      await into(categories).insertOnConflictUpdate(CategoriesCompanion(
         id: Value(id),
-        name: Value(name),
+        name: Value(cleanName),
         emoji: Value(emoji),
         kind: Value(kind),
         sort: Value(sort),
         isPreset: Value(isPreset),
-        parentId: Value(parentId),
+        parentId: Value(effectiveParent),
       ));
+    });
 
-  Future<void> deleteCategory(String id) =>
-      (delete(categories)..where((t) => t.id.equals(id))).go();
+  Future<void> deleteCategory(String id) => transaction(() async {
+    final children = await (select(categories)
+          ..where((t) => t.parentId.equals(id))..limit(1)).get();
+    if (children.isNotEmpty) throw StateError('请先删除该分类下的二级分类');
+    final references = await (select(bills)
+          ..where((t) => t.categoryId.equals(id))..limit(1)).get();
+    if (references.isNotEmpty) {
+      throw StateError('该分类仍有账单引用（含已删除账单），可改名继续使用');
+    }
+    await (delete(categories)..where((t) => t.id.equals(id))).go();
+  });
 
   Future<int> billCountOfCategory(String categoryId) async {
     final rows = await (select(bills)
-          ..where((t) =>
-              t.deletedAt.isNull() & t.categoryId.equals(categoryId)))
+          ..where((t) => t.categoryId.equals(categoryId)))
         .get();
     return rows.length;
   }
 
-  /// 分类排序：ids 为当前页展示顺序（拖动/置顶后落库）
-  Future<void> reorderCategories(List<String> ids) async {
+  /// ids 必须是同类型、同父级的完整分类列表，事务内仅改变该级排序。
+  Future<void> reorderCategories(List<String> ids) => transaction(() async {
+    if (ids.isEmpty) return;
+    final all = await getAllCategories();
+    final byId = {for (final c in all) c.id: c};
+    final first = byId[ids.first];
+    if (first == null || ids.toSet().length != ids.length ||
+        ids.any((id) => byId[id] == null || byId[id]!.kind != first.kind ||
+            byId[id]!.parentId != first.parentId)) {
+      throw StateError('只能对同级分类排序，请刷新后重试');
+    }
+    final siblings = all.where((c) =>
+        c.kind == first.kind && c.parentId == first.parentId);
+    if (siblings.length != ids.length) {
+      throw StateError('分类列表已变化，请刷新后重试');
+    }
     for (var i = 0; i < ids.length; i++) {
       await (update(categories)..where((t) => t.id.equals(ids[i])))
           .write(CategoriesCompanion(sort: Value(i)));
     }
-  }
+  });
 }
