@@ -20,9 +20,16 @@ void main() {
     await tester.enterText(find.byType(TextField), '自定义测试');
     await act(tester, '保存');
     expect(find.byType(AlertDialog), findsNothing);
-    await tester.scrollUntilVisible(find.text('自定义测试'), 250,
-        scrollable: find.descendant(of: find.byType(ReorderableListView).first,
-            matching: find.byType(Scrollable)).first);
+    await tester.scrollUntilVisible(
+      find.text('自定义测试'),
+      250,
+      scrollable: find
+          .descendant(
+            of: find.byType(ReorderableListView).first,
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     await tester.tap(find.text('自定义测试'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), '修改后');
@@ -111,7 +118,7 @@ void main() {
     await disposePage(tester, db);
   });
 
-  testWidgets('旧平面列表含二级时拒绝混层排序并提示', (tester) async {
+  testWidgets('分类列表变化后拒绝陈旧排序并提示', (tester) async {
     final db = TestAppDatabase();
     await db.upsertCategory(
       id: 'child',
@@ -122,16 +129,23 @@ void main() {
       parentId: 'cat_food',
     );
     await pumpPage(tester, const CategoriesPage(), db: db);
-    final before = await db.getAllCategories();
     final list = tester.widget<ReorderableListView>(
       find.byType(ReorderableListView).first,
     );
+    await db.upsertCategory(
+      id: 'new-root',
+      name: '新一级',
+      emoji: '🍜',
+      kind: 0,
+      sort: 99,
+    );
+    final before = await db.getAllCategories();
     await tester.runAsync(() async {
       list.onReorderItem!(0, 1);
       await Future<void>.delayed(const Duration(milliseconds: 100));
     });
     await settleProviders(tester);
-    expect(find.text('只能对同级分类排序，请刷新后重试'), findsOneWidget);
+    expect(find.text('分类列表已变化，请刷新后重试'), findsOneWidget);
     expect(await db.getAllCategories(), before);
     expect(tester.takeException(), isNull);
     await disposePage(tester, db);

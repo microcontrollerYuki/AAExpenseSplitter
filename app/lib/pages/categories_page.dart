@@ -3,10 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
 import '../data/app_database.dart';
+import '../data/category_hierarchy.dart';
 import '../providers.dart';
 import '../theme.dart';
 
-/// 分类管理页：按支出/收入/不计收支分组；新增、改名/换图标、上移置顶、删除（无账单关联才可删）
+/// 支出 / 收入最多两级；一级拖动整个分组，二级只在自己的一级下排序。
 class CategoriesPage extends ConsumerWidget {
   const CategoriesPage({super.key});
 
@@ -14,8 +15,8 @@ class CategoriesPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final categories =
-        ref.watch(categoriesProvider).value ?? const <Category>[];
+    final state = ref.watch(categoriesProvider);
+    final categories = state.value ?? const <Category>[];
 
     return DefaultTabController(
       length: 3,
@@ -38,17 +39,26 @@ class CategoriesPage extends ConsumerWidget {
           builder: (bctx) => FloatingActionButton.extended(
             backgroundColor: kPrimaryColor,
             foregroundColor: Colors.white,
-            onPressed: () => _openEdit(
-                bctx, null, _currentKind(DefaultTabController.of(bctx).index)),
+            onPressed: state.hasValue
+                ? () => _openEdit(
+                    bctx,
+                    null,
+                    _currentKind(DefaultTabController.of(bctx).index),
+                  )
+                : null,
             icon: const Icon(Icons.add),
             label: const Text('新增分类'),
           ),
         ),
-        body: TabBarView(
-          children: [
-            for (final kind in _kindTabs.keys)
-              _KindList(categories: categories, kind: kind),
-          ],
+        body: state.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (_, _) => const Center(child: Text('分类读取失败，请稍后重试')),
+          data: (_) => TabBarView(
+            children: [
+              for (final kind in _kindTabs.keys)
+                _KindList(categories: categories, kind: kind),
+            ],
+          ),
         ),
       ),
     );
@@ -72,57 +82,160 @@ class _KindList extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final list = categories.where((c) => c.kind == kind).toList();
-    if (list.isEmpty) {
+    final tree = CategoryHierarchy(categories);
+    final roots = tree.rootsOfKind(kind);
+    final list = roots.where((c) => c.parentId == null).toList();
+    final invalid = roots.where((c) => c.parentId != null).toList();
+    if (roots.isEmpty) {
       return const Center(
-          child: Text('暂无分类，点右下角新增',
-              style: TextStyle(color: Colors.grey)));
+        child: Text('暂无分类，点右下角新增', style: TextStyle(color: Colors.grey)),
+      );
     }
     return ReorderableListView.builder(
+      key: ValueKey('category-roots-$kind'),
       padding: const EdgeInsets.only(bottom: 88),
-      onReorderItem: (oldI, newI) async {
-        final ids = [for (final c in list) c.id];
-        final moved = ids.removeAt(oldI);
-        ids.insert(newI, moved);
-        try {
-          await ref.read(databaseProvider).reorderCategories(ids);
-        } on StateError catch (e) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(SnackBar(content: Text(e.message)));
-          }
-        }
-      },
+      header: const Padding(
+        padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
+        child: Text(
+          '长按右侧手柄可同级排序',
+          style: TextStyle(fontSize: 12, color: Colors.grey),
+        ),
+      ),
+      buildDefaultDragHandles: false,
+      onReorderItem: (oldI, newI) => _reorder(context, ref, list, oldI, newI),
+      footer: invalid.isEmpty
+          ? null
+          : Column(
+              children: [
+                const Divider(),
+                for (final c in invalid)
+                  _tile(context, c, invalidHierarchy: true),
+              ],
+            ),
       itemCount: list.length,
       itemBuilder: (_, i) {
         final c = list[i];
-        return ListTile(
+        final children = tree.childrenOf(c.id);
+        return Column(
           key: ValueKey(c.id),
-          leading: CircleAvatar(
-            backgroundColor: Colors.grey.shade100,
-            child: Text(c.emoji, style: const TextStyle(fontSize: 20)),
-          ),
-          title: Text(c.name),
-          subtitle: c.isPreset ? const Text('预置', style: TextStyle(fontSize: 11)) : null,
-          trailing: ReorderableDragStartListener(
-            index: i,
-            child: const Icon(Icons.drag_handle, color: Colors.grey),
-          ),
-          onTap: () => showDialog(
-            context: context,
-            builder: (_) => _CategoryEditDialog(category: c, kind: kind),
-          ),
+          children: [
+            _tile(context, c, index: i, isRoot: true),
+            if (children.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(left: 24),
+                child: ReorderableListView.builder(
+                  key: ValueKey('category-children-${c.id}'),
+                  shrinkWrap: true,
+                  primary: false,
+                  physics: const NeverScrollableScrollPhysics(),
+                  buildDefaultDragHandles: false,
+                  onReorderItem: (oldI, newI) =>
+                      _reorder(context, ref, children, oldI, newI),
+                  itemCount: children.length,
+                  itemBuilder: (_, j) => _tile(context, children[j], index: j),
+                ),
+              ),
+          ],
         );
       },
     );
   }
+
+  Future<void> _reorder(
+    BuildContext context,
+    WidgetRef ref,
+    List<Category> siblings,
+    int oldI,
+    int newI,
+  ) async {
+    final ids = [for (final c in siblings) c.id];
+    ids.insert(newI, ids.removeAt(oldI));
+    try {
+      await ref.read(databaseProvider).reorderCategories(ids);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e is StateError ? e.message : '排序失败，请稍后重试')),
+        );
+      }
+    }
+  }
+
+  Widget _tile(
+    BuildContext context,
+    Category c, {
+    int? index,
+    bool isRoot = false,
+    bool invalidHierarchy = false,
+  }) => ListTile(
+    key: ValueKey('category-row-${c.id}'),
+    leading: CircleAvatar(
+      backgroundColor: Colors.grey.shade100,
+      radius: isRoot ? 20 : 16,
+      child: Text(c.emoji, style: const TextStyle(fontSize: 20)),
+    ),
+    title: Text(c.name, maxLines: 2, overflow: TextOverflow.ellipsis),
+    subtitle: Text(
+      invalidHierarchy
+          ? '分类归属异常'
+          : isRoot
+          ? (c.isPreset ? '一级分类 · 预置' : '一级分类')
+          : '二级分类',
+      style: const TextStyle(fontSize: 11),
+    ),
+    trailing: invalidHierarchy
+        ? null
+        : Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (isRoot && kind != 2)
+                IconButton(
+                  key: ValueKey('category-add-child-${c.id}'),
+                  tooltip: '在${c.name}下新增二级',
+                  icon: const Icon(Icons.add_circle_outline),
+                  onPressed: () => showDialog(
+                    context: context,
+                    builder: (_) => _CategoryEditDialog(
+                      category: null,
+                      kind: kind,
+                      initialParentId: c.id,
+                    ),
+                  ),
+                ),
+              // 移动端长按手柄进入排序，普通滑动用于滚动。
+              ReorderableDelayedDragStartListener(
+                key: ValueKey('category-drag-${c.id}'),
+                index: index!,
+                child: const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Icon(Icons.drag_handle, color: Colors.grey),
+                ),
+              ),
+            ],
+          ),
+    onTap: () => showDialog(
+      context: context,
+      builder: (_) => _CategoryEditDialog(
+        category: c,
+        kind: kind,
+        invalidHierarchy: invalidHierarchy,
+      ),
+    ),
+  );
 }
 
 class _CategoryEditDialog extends ConsumerStatefulWidget {
-  const _CategoryEditDialog({required this.category, required this.kind});
+  const _CategoryEditDialog({
+    required this.category,
+    required this.kind,
+    this.initialParentId,
+    this.invalidHierarchy = false,
+  });
 
   final Category? category;
   final int kind;
+  final String? initialParentId;
+  final bool invalidHierarchy;
 
   @override
   ConsumerState<_CategoryEditDialog> createState() =>
@@ -132,12 +245,59 @@ class _CategoryEditDialog extends ConsumerStatefulWidget {
 class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
   late final TextEditingController _nameCtl;
   late String _emoji;
+  late String? _parentId;
+  String? _error;
+  bool _busy = false;
 
   static const _iconLib = <String>[
-    '🍜', '🛒', '🧴', '🚌', '🏠', '🎮', '💊', '📚', '🎁', '🐾', '📱', '📦',
-    '💰', '🧧', '📈', '↩️', '✨', '☕', '🍰', '🍺', '🚗', '✈️', '🚄', '⛽',
-    '👶', '👩‍👦', '🧓', '💇', '🏥', '🦷', '🏃', '⚽', '🎵', '🎬', '🚬', '🧹',
-    '💡', '🧰', '🪑', '👕', '👟', '💍', '🛠️', '🌾', '🐟', '🥬', '🍚', '🧂',
+    '🍜',
+    '🛒',
+    '🧴',
+    '🚌',
+    '🏠',
+    '🎮',
+    '💊',
+    '📚',
+    '🎁',
+    '🐾',
+    '📱',
+    '📦',
+    '💰',
+    '🧧',
+    '📈',
+    '↩️',
+    '✨',
+    '☕',
+    '🍰',
+    '🍺',
+    '🚗',
+    '✈️',
+    '🚄',
+    '⛽',
+    '👶',
+    '👩‍👦',
+    '🧓',
+    '💇',
+    '🏥',
+    '🦷',
+    '🏃',
+    '⚽',
+    '🎵',
+    '🎬',
+    '🚬',
+    '🧹',
+    '💡',
+    '🧰',
+    '🪑',
+    '👕',
+    '👟',
+    '💍',
+    '🛠️',
+    '🌾',
+    '🐟',
+    '🥬',
+    '🍚',
+    '🧂',
   ];
 
   @override
@@ -145,6 +305,7 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
     super.initState();
     _nameCtl = TextEditingController(text: widget.category?.name ?? '');
     _emoji = widget.category?.emoji ?? '🏷️';
+    _parentId = widget.category?.parentId ?? widget.initialParentId;
   }
 
   @override
@@ -153,70 +314,162 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
     super.dispose();
   }
 
-  void _snack(String msg) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+  void _close() {
+    if (mounted && ModalRoute.of(context)?.isCurrent == true) {
+      Navigator.of(context).pop();
+    }
   }
 
   Future<void> _save() async {
+    if (_busy || widget.invalidHierarchy) return;
     final name = _nameCtl.text.trim();
-    if (name.isEmpty) return _snack('请填写分类名称');
+    if (name.isEmpty) {
+      setState(() => _error = '请填写分类名称');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     final db = ref.read(databaseProvider);
     final id =
         widget.category?.id ?? 'cat_${const Uuid().v4().substring(0, 8)}';
     try {
+      final all = await db.getAllCategories();
+      if (widget.category != null && !all.any((c) => c.id == id)) {
+        throw StateError('该分类已被删除，请关闭后重试');
+      }
+      final siblings = all.where(
+        (c) => c.kind == widget.kind && c.parentId == _parentId,
+      );
+      final lastSort = siblings.fold<int>(
+        -1,
+        (value, c) => c.sort > value ? c.sort : value,
+      );
       await db.upsertCategory(
         id: id,
         name: name,
         emoji: _emoji,
         kind: widget.kind,
-        sort: widget.category?.sort ?? 99,
-        isPreset: false,
+        sort: widget.category?.sort ?? lastSort + 1,
+        isPreset: widget.category?.isPreset ?? false,
+        parentId: _parentId,
       );
-      if (mounted) Navigator.of(context).pop();
-    } on StateError catch (e) {
-      if (mounted) _snack(e.message);
+      _close();
     } catch (e) {
-      if (mounted) _snack('保存失败：$e');
+      if (mounted) {
+        setState(() => _error = e is StateError ? e.message : '保存失败，请稍后重试');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _delete() async {
+    if (_busy) return;
     final c = widget.category;
     if (c == null) return;
     final db = ref.read(databaseProvider);
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
       final n = await db.billCountOfCategory(c.id);
       if (!mounted) return;
       if (n > 0) {
-        _snack('该分类已有 $n 笔账单（含已删除），无法删除（可改名继续用）');
-        return;
+        throw StateError('该分类已有 $n 笔账单（含已删除），无法删除（可改名继续用）');
       }
       await db.deleteCategory(c.id);
-      if (mounted) Navigator.of(context).pop();
-    } on StateError catch (e) {
-      if (mounted) _snack(e.message);
+      _close();
     } catch (e) {
-      if (mounted) _snack('删除失败：$e');
+      if (mounted) {
+        setState(() => _error = e is StateError ? e.message : '删除失败，请稍后重试');
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final all = ref.watch(categoriesProvider).value ?? const <Category>[];
+    final parents = CategoryHierarchy(all)
+        .rootsOfKind(widget.kind)
+        .where((c) => c.parentId == null)
+        .toList();
+    final parent = all.where((c) => c.id == _parentId).firstOrNull;
     return AlertDialog(
-      title: Text(widget.category == null ? '新增分类' : '编辑分类'),
+      scrollable: true,
+      title: Text(
+        widget.category != null
+            ? '编辑分类'
+            : _parentId == null
+            ? '新增分类'
+            : '新增二级分类',
+      ),
       content: SizedBox(
         width: 340,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (widget.invalidHierarchy) const Text('分类归属异常，暂不可修改；未被引用时可以删除'),
+            if (widget.category == null && widget.kind != 2)
+              DropdownButtonFormField<String>(
+                initialValue: _parentId ?? '',
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: '所属一级'),
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('一级分类（无父级）')),
+                  for (final c in parents)
+                    DropdownMenuItem(
+                      value: c.id,
+                      child: Text(
+                        c.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  if (_parentId != null &&
+                      !parents.any((c) => c.id == _parentId))
+                    DropdownMenuItem(
+                      value: _parentId,
+                      enabled: false,
+                      child: const Text('父级已不可用'),
+                    ),
+                ],
+                onChanged: _busy
+                    ? null
+                    : (id) => setState(() {
+                        _parentId = id == '' ? null : id;
+                        _error = null;
+                      }),
+              )
+            else if (_parentId != null && !widget.invalidHierarchy)
+              Text('所属一级：${parent?.name ?? '父级已不可用'}'),
+            const SizedBox(height: 8),
             TextField(
               controller: _nameCtl,
+              readOnly: _busy || widget.invalidHierarchy,
               decoration: const InputDecoration(labelText: '名称'),
+              onChanged: (_) {
+                if (_error != null) setState(() => _error = null);
+              },
             ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
             const SizedBox(height: 12),
-            const Text('图标', style: TextStyle(fontSize: 13, color: Colors.grey)),
+            const Text(
+              '图标',
+              style: TextStyle(fontSize: 13, color: Colors.grey),
+            ),
             const SizedBox(height: 6),
             SizedBox(
               height: 190,
@@ -227,7 +480,9 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
                 children: [
                   for (final e in _iconLib)
                     GestureDetector(
-                      onTap: () => setState(() => _emoji = e),
+                      onTap: _busy || widget.invalidHierarchy
+                          ? null
+                          : () => setState(() => _emoji = e),
                       child: Container(
                         margin: const EdgeInsets.all(2),
                         decoration: BoxDecoration(
@@ -236,12 +491,14 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
                               : Colors.grey.shade100,
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(
-                              color: _emoji == e
-                                  ? kPrimaryColor
-                                  : Colors.transparent),
+                            color: _emoji == e
+                                ? kPrimaryColor
+                                : Colors.transparent,
+                          ),
                         ),
-                        child:
-                            Center(child: Text(e, style: const TextStyle(fontSize: 20))),
+                        child: Center(
+                          child: Text(e, style: const TextStyle(fontSize: 20)),
+                        ),
                       ),
                     ),
                 ],
@@ -253,13 +510,17 @@ class _CategoryEditDialogState extends ConsumerState<_CategoryEditDialog> {
       actions: [
         if (widget.category != null)
           TextButton(
-            onPressed: _delete,
+            onPressed: _busy ? null : _delete,
             child: const Text('删除', style: TextStyle(color: kExpenseColor)),
           ),
         TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消')),
-        FilledButton(onPressed: _save, child: const Text('保存')),
+          onPressed: _busy ? null : () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _busy || widget.invalidHierarchy ? null : _save,
+          child: const Text('保存'),
+        ),
       ],
     );
   }
