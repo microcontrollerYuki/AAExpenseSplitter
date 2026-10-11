@@ -374,6 +374,16 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
     final current = await (select(
       bills,
     )..where((t) => t.id.equals(id))).getSingleOrNull();
+    if (current?.settlementId != null) {
+      throw StateError('结算账单仅可修改本机账户和备注');
+    }
+    // 普通写入不能把既有关联清空后再作为外币账单改写。
+    // 取消 AA 由专用事务先取消共享组，再 unlink 原始账单。
+    if (current != null &&
+        ((current.aaGroupId != null && current.aaGroupId != aaGroupId) ||
+            (current.isAa && aaGroupId == null))) {
+      throw StateError('账单 AA 或结算关联已存在，不能清空或更换');
+    }
     final account = await getAccount(accountId);
     if (account == null) throw StateError('所选账户不存在，请重新选择');
     _currencyCode(account.currency);
@@ -533,6 +543,10 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
             bill.toAccountId != null ||
             bill.settlementId != null) {
           throw StateError('仅有效支出可关联 AA');
+        }
+        if ((bill.aaGroupId != null && bill.aaGroupId != groupId) ||
+            (bill.isAa && bill.aaGroupId == null)) {
+          throw StateError('账单已关联 AA，不能更换分摊组');
         }
         final account = await getAccount(bill.accountId);
         if (account == null) throw StateError('所选账户不存在');
@@ -736,14 +750,23 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
 
   /// 取消 AA 标记：关联账单转普通账单（isAa/aaGroupId 清空）
   Future<void> unlinkBillFromAaGroup(String billId) =>
-      (update(bills)..where((t) => t.id.equals(billId))).write(BillsCompanion(
-          isAa: const Value(false), aaGroupId: const Value<String?>(null)));
+      transaction(() async {
+        await _checkAaBillNotSettled(billId);
+        await (update(bills)..where((t) => t.id.equals(billId))).write(
+          BillsCompanion(
+            isAa: const Value(false),
+            aaGroupId: const Value<String?>(null),
+          ),
+        );
+      });
 
   /// 份额口径统一：AA 关联的份额类账单（非垫付方全额账单）金额 = 总额的一半（向下取整），
   /// 奇数总额多出的 1 分归垫付方。幂等，供 beforeOpen 修复历史数据。
   Future<void> normalizeAaShareAmounts() async {
     final groups = await select(aaGroups).get();
     for (final g in groups) {
+      // 历史结算金额必须保留，开库修复不能绕过用户写入防护。
+      if (g.settled || g.settlementId != null) continue;
       final share = g.totalAmount ~/ 2;
       final linked = await billsOfAaGroup(g.id);
       for (final b in linked) {
@@ -751,6 +774,7 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
         // Do not let malformed historical associations block opening the app
         // or overwrite a foreign amount through a CNY-only repair helper.
         if ((b.type != 0 && b.type != 1) ||
+            b.settlementId != null ||
             b.currency != 'CNY' ||
             account?.currency != 'CNY' ||
             b.accountAmount != b.amount) {
@@ -832,10 +856,14 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
 
   Future<void> _updateCnyBillAmount(String billId, int amount, {int? dateMs}) =>
       transaction(() async {
+        await _checkAaBillNotSettled(billId);
         final bill = await (select(
           bills,
         )..where((t) => t.id.equals(billId))).getSingleOrNull();
         if (bill == null) return;
+        if (bill.settlementId != null) {
+          throw StateError('结算账单仅可修改本机账户和备注');
+        }
         final account = await getAccount(bill.accountId);
         if (account == null || amount < 0) throw StateError('账户或金额无效');
         _checkCnyMoney(bill.currency, account, bill.amount, bill.accountAmount);

@@ -139,6 +139,7 @@ class AaSyncService {
           for (final g in await _db.getAllAaGroups())
             if (countsTowardBalance(g)) g,
         ];
+        await _checkCnyLinkedBills(groupIds: covered.map((g) => g.id));
         final net = _computeNetFor(covered, myUid);
         if (net == 0) return;
         final partnerUid = await _db.getMeta('partnerUid');
@@ -233,8 +234,15 @@ class AaSyncService {
     final myName = await _db.getMeta('myName') ?? '';
     final secret = await _db.getMeta('pairSecret');
     if (secret == null) throw Exception('尚未配对');
-    final groups = await _db.getAllAaGroups();
-    final settles = await _db.getAllSettlements();
+    final (groups, settles) = await _db.transaction(() async {
+      final groups = await _db.getAllAaGroups();
+      final settles = await _db.getAllSettlements();
+      await _checkCnyLinkedBills(
+        groupIds: groups.map((g) => g.id),
+        settlementIds: settles.map((s) => s.id),
+      );
+      return (groups, settles);
+    });
     final payload = <String, Object?>{
       'format': 1,
       'fromUid': myUid,
@@ -289,6 +297,77 @@ class AaSyncService {
 
   // ---------- 导入 ----------
 
+  /// 本机历史行可能早于币种防护。连同软删除关联一起检查，拒绝把
+  /// 外币组按隐含 CNY 的旧协议导出、结算或同步修改；不推测缺失账户。
+  Future<void> _checkCnyLinkedBills({
+    Iterable<String> groupIds = const [],
+    Iterable<String> settlementIds = const [],
+  }) async {
+    final groups = groupIds.toSet();
+    final settlements = settlementIds.toSet();
+    if (groups.isEmpty && settlements.isEmpty) return;
+    if (settlements.isNotEmpty) {
+      final covered = await (_db.select(_db.aaGroups)
+            ..where((t) => t.settlementId.isIn(settlements)))
+          .get();
+      groups.addAll(covered.map((g) => g.id));
+    }
+    final linked = await (_db.select(_db.bills)..where((t) =>
+          t.aaGroupId.isIn(groups) | t.settlementId.isIn(settlements)))
+        .get();
+    final accounts = {for (final a in await _db.getAllAccounts()) a.id: a};
+    for (final bill in linked) {
+      final source = accounts[bill.accountId];
+      var valid = bill.currency == 'CNY' &&
+          source?.currency == 'CNY' &&
+          bill.amount >= 0 &&
+          bill.accountAmount == bill.amount;
+      if (bill.type == 2 &&
+          bill.aaGroupId == null &&
+          bill.settlementId != null) {
+        // 旧版人民币结算曾落为同币转账，保留其原有同步与幂等语义。
+        final target = accounts[bill.toAccountId];
+        valid = valid && target?.currency == 'CNY' &&
+            target?.id != source?.id &&
+            (bill.toAccountAmount == null ||
+                bill.toAccountAmount == bill.amount);
+      } else {
+        valid = valid && (bill.type == 0 || bill.type == 1) &&
+            bill.toAccountId == null && bill.toAccountAmount == null;
+      }
+      if (!valid) {
+        throw StateError('AA 关联账单的币种或金额待确认，暂不能同步或结算');
+      }
+    }
+  }
+
+  /// v1 金额隐含人民币；先验证整份文件，不能将新协议或外币按分导入。
+  /// 最早的文件可能省略 format / currency，继续采用既有 CNY 语义。
+  static void _checkCnySyncPayload(Map<String, Object?> data) {
+    if (data.containsKey('format') &&
+        (data['format'] is! int || data['format'] != 1)) {
+      throw StateError('不支持此同步文件版本，请使用人民币 AA 同步文件');
+    }
+    void checkCurrency(Map<Object?, Object?> record) {
+      if (!record.containsKey('currency')) return;
+      final code = record['currency'];
+      if (code is! String || code.trim().toUpperCase() != 'CNY') {
+        throw StateError('AA 同步暂仅支持 CNY，不可导入外币金额');
+      }
+    }
+
+    checkCurrency(data);
+    for (final key in ['groups', 'settlements']) {
+      final records = data[key];
+      if (records == null) continue;
+      if (records is! List) throw StateError('同步文件的 AA 数据格式无效');
+      for (final record in records) {
+        if (record is! Map) throw StateError('同步文件的 AA 数据格式无效');
+        checkCurrency(record);
+      }
+    }
+  }
+
   /// 导入伙伴发来的 .aas 文件并幂等合并，返回结果描述
   Future<String> importSyncFile(String path) async {
     final secret = await _db.getMeta('pairSecret');
@@ -296,10 +375,22 @@ class AaSyncService {
     final content = await File(path).readAsString();
     // 口令不一致会在这里抛出验签失败
     final data = await decryptAasContent(content, secret);
+    _checkCnySyncPayload(data);
     final fromUid = data['fromUid'] as String? ?? '';
     final myUid = await _db.getMeta('myUid') ?? '';
     if (fromUid.isEmpty || fromUid == myUid) return '这是自己导出的文件，无需导入';
     return _db.transaction(() async {
+      // 重复结算或陈旧组也要检查，不能借「无需更新」绕过历史币种保护。
+      await _checkCnyLinkedBills(
+        groupIds: [
+          for (final g in data['groups'] as List? ?? const [])
+            (g as Map)['id'] as String,
+        ],
+        settlementIds: [
+          for (final s in data['settlements'] as List? ?? const [])
+            (s as Map)['id'] as String,
+        ],
+      );
       await _db.setMeta('partnerUid', fromUid);
       await _db.setMeta('partnerName', (data['fromName'] as String?) ?? '伙伴');
 
@@ -366,6 +457,19 @@ class AaSyncService {
           final newTotal = m['totalAmount'] as int;
           final newDateMs = m['dateMs'] as int;
           final newStatus = m['status'] as int? ?? local.status;
+          // 在旧组仍未结算时同步份额，再接收结算标记；不能先锁定组
+          // 再借快捷入口改金额，也不能改写此前已结算的历史份额。
+          if (!local.settled && local.ownerUid != myUid &&
+              newStatus <= 1 &&
+              (local.totalAmount != newTotal || local.dateMs != newDateMs)) {
+            final linked = await _db.billsOfAaGroup(id);
+            for (final b in linked) {
+              if (b.type == 0) {
+                await _db.updateBillAmountAndDate(
+                    b.id, shareOfNonPayer(newTotal), newDateMs);
+              }
+            }
+          }
           // 更新既有行走 update.write：upsert(insertOnConflictUpdate) 缺必填字段会抛
           // InvalidDataException，即使行已存在也先做 INSERT 完整性校验
           await (_db.update(_db.aaGroups)..where((t) => t.id.equals(id)))
@@ -379,24 +483,15 @@ class AaSyncService {
             statusByUid: Value(m['statusByUid'] as String?),
             statusAtMs: Value(m['statusAtMs'] as int?),
             statusNote: Value(m['statusNote'] as String?),
-            settled: Value(m['settled'] as bool? ?? local.settled),
-            settlementId: Value(m['settlementId'] as String?),
+            // 结算状态不可由迟到/旧文件降级，避免下一次同步改历史份额。
+            settled: Value(local.settled || (m['settled'] as bool? ?? false)),
+            settlementId: Value(local.settled
+                ? local.settlementId : m['settlementId'] as String?),
             updatedAtMs: Value(incomingUpdated),
           ));
-          // 伙伴改了金额/日期 → 同步更新本机份额账单（金额=新份额，日期跟随）
-          if (local.ownerUid != myUid &&
-              newStatus <= 1 &&
-              (local.totalAmount != newTotal || local.dateMs != newDateMs)) {
-            final linked = await _db.billsOfAaGroup(id);
-            for (final b in linked) {
-              if (b.type == 0) {
-                await _db.updateBillAmountAndDate(
-                    b.id, shareOfNonPayer(newTotal), newDateMs);
-              }
-            }
-          }
           // 伙伴「取消 AA / 删除」（status=3 墓碑）→ 同步作废我的份额账单（§4.6 双方软删除）
-          if (local.ownerUid != myUid && newStatus == 3) {
+          if (!local.settled && local.ownerUid != myUid && newStatus == 3 &&
+              !(m['settled'] as bool? ?? local.settled)) {
             final linked = await _db.billsOfAaGroup(id);
             for (final b in linked) {
               await _db.softDeleteBill(b.id);
