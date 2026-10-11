@@ -76,25 +76,28 @@ class AaSyncService {
     required String note,
     required String categoryName,
     required String categoryEmoji,
-  }) async {
+  }) => _db.transaction(() async {
     final myUid = await _db.getMeta('myUid');
     if (myUid == null) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     final groupId = const Uuid().v4();
-    await _db.upsertAaGroup(AaGroupsCompanion.insert(
-      id: groupId,
-      ownerUid: myUid,
-      payerUid: myUid,
-      totalAmount: totalAmount,
-      dateMs: dateMs,
-      note: Value(note),
-      categoryName: Value(categoryName),
-      categoryEmoji: Value(categoryEmoji),
-      createdAtMs: now,
-      updatedAtMs: now,
-    ));
+    await _db.upsertAaGroup(
+      AaGroupsCompanion.insert(
+        id: groupId,
+        ownerUid: myUid,
+        payerUid: myUid,
+        totalAmount: totalAmount,
+        dateMs: dateMs,
+        note: Value(note),
+        categoryName: Value(categoryName),
+        categoryEmoji: Value(categoryEmoji),
+        createdAtMs: now,
+        updatedAtMs: now,
+      ),
+    );
+    // 关联层会核对 CNY 交易与账户；拒绝时也必须回滚刚创建的组。
     await _db.linkBillToAaGroup(billId, groupId);
-  }
+  });
 
   /// 收到伙伴确认信息后：不再生成「AA应收」收入账单（收入统一在结算时
   /// 逐条生成，见 [settle] / [_createSettlementBills]），此处仅保留分摊组状态。
@@ -126,11 +129,15 @@ class AaSyncService {
   /// 账户统一为结算时选择的 [accountId]。不再生成任何转账。
   Future<void> settle({required String accountId, String note = ''}) =>
       _db.transaction(() async {
+        final account = await _db.getAccount(accountId);
+        if (account == null || !_isCnyRealAccount(account)) {
+          throw StateError('AA 结算仅支持真实人民币账户');
+        }
         final myUid = await _db.getMeta('myUid') ?? '';
         // 同一快照决定净额、核销与落账，消费日期在未来的组也不会重复结算。
         final covered = [
           for (final g in await _db.getAllAaGroups())
-            if (countsTowardBalance(g)) g
+            if (countsTowardBalance(g)) g,
         ];
         final net = _computeNetFor(covered, myUid);
         if (net == 0) return;
@@ -140,19 +147,24 @@ class AaSyncService {
         }
         final now = DateTime.now().millisecondsSinceEpoch;
         final id = const Uuid().v4();
-        await _db.upsertSettlement(SettlementsCompanion.insert(
-          id: id,
-          receiverUid: net > 0 ? myUid : partnerUid,
-          amount: net.abs(),
-          dateMs: now,
-          cutoffMs: now,
-          createdAtMs: now,
-          note: Value(note),
-        ));
+        await _db.upsertSettlement(
+          SettlementsCompanion.insert(
+            id: id,
+            receiverUid: net > 0 ? myUid : partnerUid,
+            amount: net.abs(),
+            dateMs: now,
+            cutoffMs: now,
+            createdAtMs: now,
+            note: Value(note),
+          ),
+        );
         await _db.markGroupsSettled([for (final g in covered) g.id], id, now);
         await _db.setMeta(kAaSettleAccountKey, accountId);
         await _createSettlementBillsFromGroups(
-            settlementId: id, covered: covered, accountId: accountId);
+          settlementId: id,
+          covered: covered,
+          accountId: accountId,
+        );
       });
 
   /// 接收方确认 / 退回（更新既有行，缺省字段走 update.write，避免 upsert 缺必填字段报错）
@@ -488,16 +500,22 @@ class AaSyncService {
   /// 结算账户偏好（[settle] 选定后保存；导入伙伴结算时沿用）
   static const kAaSettleAccountKey = 'aaSettleAccountId';
 
+  /// 旧 AA 协议只使用真实人民币账户。
+  static bool _isCnyRealAccount(Account account) =>
+      account.currency == 'CNY' &&
+      account.id != kAaCreditAccountId &&
+      account.type != 4;
+
   /// 结算落账账户：优先沿用上次结算选择，否则取第一个真实账户；
-  /// 无真实账户时返回 null（跳过落账）
+  /// 只接受真实人民币账户；没有适合账户时返回 null（跳过落账，重导补录）
   Future<String?> _preferredSettleAccount() async {
     final accounts = await _db.getAllAccounts();
     final preferred = await _db.getMeta(kAaSettleAccountKey);
     for (final a in accounts) {
-      if (a.id == preferred) return a.id;
+      if (a.id == preferred && _isCnyRealAccount(a)) return a.id;
     }
     for (final a in accounts) {
-      if (a.id != kAaCreditAccountId) return a.id;
+      if (_isCnyRealAccount(a)) return a.id;
     }
     return null;
   }

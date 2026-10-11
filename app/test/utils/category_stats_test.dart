@@ -31,6 +31,8 @@ Bill statsBill(
   id: id,
   type: type,
   amount: amount,
+  currency: 'CNY',
+  accountAmount: amount,
   categoryId: category,
   accountId: 'account',
   toAccountId: null,

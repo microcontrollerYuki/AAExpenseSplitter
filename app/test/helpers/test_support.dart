@@ -64,6 +64,7 @@ Account mkAccount(
   bool includeNetWorth = true,
   int sort = 0,
   int createdAt = 0,
+  String currency = 'CNY',
 }) =>
     Account(
       id: id,
@@ -71,6 +72,7 @@ Account mkAccount(
       emoji: emoji,
       type: type,
       initBalance: initBalance,
+      currency: currency,
       includeNetWorth: includeNetWorth,
       sort: sort,
       createdAt: createdAt,
@@ -92,11 +94,15 @@ Bill mkBill(
   int createdAt = 0,
   int updatedAt = 0,
   int? deletedAt,
+  String currency = 'CNY',
+  int? accountAmount,
 }) =>
     Bill(
       id: id,
       type: type,
       amount: amount,
+      currency: currency,
+      accountAmount: accountAmount ?? amount,
       categoryId: categoryId,
       accountId: accountId,
       toAccountId: toAccountId,

@@ -206,6 +206,7 @@ void main() {
         .write(BillsCompanion(
       type: const Value(0),
       amount: const Value(9876),
+      accountAmount: const Value(9876),
       dateMs: Value(latestDate),
       categoryId: const Value('cat_shopping'),
       createdAt: const Value(654321),
@@ -223,6 +224,7 @@ void main() {
     final after = (await db.getAllBills()).single;
     _expectOnlyLocalFieldsChanged(latest, after, '仅更新私有字段');
     expect(after.amount, 9876);
+    expect(after.accountAmount, 9876);
     expect(after.dateMs, latestDate);
     expect(after.categoryId, 'cat_shopping');
     expect(after.type, 0);

@@ -94,7 +94,7 @@ void main() {
           '"created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL, '
           '"deleted_at" INTEGER NULL)');
       raw.execute('PRAGMA user_version = 1');
-      raw.dispose();
+      raw.close();
 
       final db2 = DbWithExecutor(NativeDatabase(File(path)));
       // 迁移后新表可用
@@ -122,7 +122,7 @@ void main() {
       // bills 新增的 settlement_id 列可写可查
       await db2.upsertBill(
         id: 'b1',
-        type: 2,
+        type: 1,
         amount: 500,
         accountId: 'acc_cash',
         dateMs: 5,

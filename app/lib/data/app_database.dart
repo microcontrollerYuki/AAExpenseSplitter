@@ -5,6 +5,7 @@ import 'package:drift/native.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../utils/currency.dart';
 import 'presets.dart';
 
 part 'app_database.g.dart';
@@ -69,7 +70,9 @@ class Accounts extends Table {
   TextColumn get emoji => text().withDefault(const Constant('💰'))();
   IntColumn get type => integer().withDefault(const Constant(3))();
   IntColumn get initBalance => integer().withDefault(const Constant(0))(); // 分
-  BoolColumn get includeNetWorth => boolean().withDefault(const Constant(true))();
+  TextColumn get currency => text().withDefault(const Constant('CNY'))();
+  BoolColumn get includeNetWorth =>
+      boolean().withDefault(const Constant(true))();
   IntColumn get sort => integer().withDefault(const Constant(0))();
   IntColumn get createdAt => integer()();
 
@@ -92,11 +95,14 @@ class Categories extends Table {
 }
 
 /// 账单：type 0 支出 / 1 收入 / 2 转账 / 3 余额调节(预留)
-/// amount 单位为分；isAa / aaGroupId 为 M2 AA 同步预留字段
+/// amount 为交易币种最小单位；accountAmount 为账户币种实际收付款最小单位。
+/// 转账暂限双方同币种、双金额相等；AA 协议暂限 CNY。
 class Bills extends Table {
   TextColumn get id => text()();
   IntColumn get type => integer()();
   IntColumn get amount => integer()();
+  TextColumn get currency => text().withDefault(const Constant('CNY'))();
+  IntColumn get accountAmount => integer().withDefault(const Constant(0))();
   TextColumn get categoryId => text().nullable()();
   TextColumn get accountId => text()();
   TextColumn get toAccountId => text().nullable()();
@@ -168,27 +174,36 @@ LazyDatabase _openConnection() {
 }
 
 @DriftDatabase(
-    tables: [Accounts, Categories, Bills, AaGroups, Settlements, MetaEntries])
+  tables: [Accounts, Categories, Bills, AaGroups, Settlements, MetaEntries],
+)
 class AppDatabase extends _$AppDatabase {
   /// [executor] 仅供测试注入（如 NativeDatabase.memory()），生产路径不变
   AppDatabase({QueryExecutor? executor}) : super(executor ?? _openConnection());
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
-        onUpgrade: (m, from, to) async {
-          if (from == 1) {
-            await m.createTable(aaGroups);
-            await m.createTable(settlements);
-            await m.createTable(metaEntries);
-            await m.addColumn(bills, bills.settlementId);
-          } else if (from == 2) {
-            await m.addColumn(aaGroups, aaGroups.statusNote);
-          }
-        },
-        beforeOpen: (details) async {
+    onUpgrade: (m, from, to) => transaction(() async {
+      if (from == 1) {
+        await m.createTable(aaGroups);
+        await m.createTable(settlements);
+        await m.createTable(metaEntries);
+        await m.addColumn(bills, bills.settlementId);
+      } else if (from == 2) {
+        await m.addColumn(aaGroups, aaGroups.statusNote);
+      }
+      if (from < 4) {
+        await m.addColumn(accounts, accounts.currency);
+        await m.addColumn(bills, bills.currency);
+        await m.addColumn(bills, bills.accountAmount);
+        // Includes deleted rows, transfers and AA. Existing cents already
+        // are CNY minor units: never rescale them or change timestamps.
+        await customStatement('UPDATE bills SET account_amount = amount');
+      }
+    }),
+    beforeOpen: (details) async {
           final now = DateTime.now().millisecondsSinceEpoch;
           final hasCategory =
               await (select(categories)..limit(1)).getSingleOrNull();
@@ -325,39 +340,144 @@ class AppDatabase extends _$AppDatabase {
     int? createdAt,
     String? aaGroupId,
     String? settlementId,
-  }) =>
-      transaction(() async {
-        await _checkAaBillNotSettled(id);
-        if (categoryId != null) {
-          final category = await (select(categories)
-                ..where((t) => t.id.equals(categoryId)))
-              .getSingleOrNull();
-          if (category == null) {
-            throw StateError('所选分类已删除，请重新选择');
-          }
-        }
-        final now = DateTime.now().millisecondsSinceEpoch;
-        await into(bills).insertOnConflictUpdate(BillsCompanion(
-          id: Value(id),
-          type: Value(type),
-          amount: Value(amount),
-          categoryId: Value(categoryId),
-          accountId: Value(accountId),
-          toAccountId: Value(toAccountId),
-          dateMs: Value(dateMs),
-          note: Value(note),
-          isAa: Value(aaGroupId != null),
-          aaGroupId: Value(aaGroupId),
-          settlementId: Value(settlementId),
-          createdAt: Value(createdAt ?? now),
-          updatedAt: Value(now),
-        ));
-      });
+    String? currency,
+    int? accountAmount,
+  }) => transaction(() async {
+    await _checkAaBillNotSettled(id);
+    final current = await (select(
+      bills,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
+    final code = _currencyCode(currency ?? current?.currency ?? 'CNY');
+    final account = await getAccount(accountId);
+    if (account == null) throw StateError('所选账户不存在，请重新选择');
+    _currencyCode(account.currency);
+    if (type < 0 || type > 3 || (type != 3 && amount < 0)) {
+      throw StateError('账单类型或金额无效');
+    }
+    final identityChanged = current != null &&
+        (current.currency != code || current.amount != amount ||
+            current.accountId != accountId);
+    if (identityChanged && accountAmount == null) {
+      final previousAccount = await getAccount(current.accountId);
+      if (previousAccount?.currency != current.currency) {
+        throw StateError('跨币种账单金额或账户变化，请重新确认实际收付款额');
+      }
+    }
+    final sameCurrency = code == account.currency;
+    final int actual;
+    if (sameCurrency) {
+      actual = accountAmount ?? amount;
+      if (actual != amount) throw StateError('同币种交易的原币与账户金额必须一致');
+    } else {
+      final unchanged =
+          current != null &&
+          current.currency == code &&
+          current.amount == amount &&
+          current.accountId == accountId;
+      final retained = unchanged ? current.accountAmount : null;
+      final supplied = accountAmount ?? retained;
+      if (supplied == null) throw StateError('跨币种交易请填写账户实际收付款额');
+      actual = supplied;
+    }
+    if (type != 3 && actual < 0) throw StateError('账户实际收付款额无效');
+    if (type == 2) {
+      final target = toAccountId == null ? null : await getAccount(toAccountId);
+      if (target == null || target.id == accountId) {
+        throw StateError('请选择不同且有效的转入账户');
+      }
+      if (!sameCurrency || target.currency != code) {
+        throw StateError('暂不支持跨币种转账');
+      }
+      if (account.type == 4 ||
+          target.type == 4 ||
+          account.id == kAaCreditAccountId ||
+          target.id == kAaCreditAccountId ||
+          aaGroupId != null) {
+        throw StateError('转账不能关联 AA 或使用 AA 挂账账户');
+      }
+    } else if (toAccountId != null) {
+      throw StateError('仅转账可指定转入账户');
+    }
+    if (categoryId != null) {
+      final category = await (select(
+        categories,
+      )..where((t) => t.id.equals(categoryId))).getSingleOrNull();
+      if (category == null) {
+        throw StateError('所选分类已删除，请重新选择');
+      }
+      if (type == 2 && category.kind == 2) {
+        throw StateError('转账不能使用 AA 内部往来分类');
+      }
+      if (category.kind == 2) _checkCnyMoney(code, account, amount, actual);
+    }
+    if (aaGroupId != null ||
+        settlementId != null ||
+        current?.isAa == true ||
+        current?.aaGroupId != null ||
+        current?.settlementId != null ||
+        account.type == 4 ||
+        account.id == kAaCreditAccountId) {
+      _checkCnyMoney(code, account, amount, actual);
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await into(bills).insertOnConflictUpdate(
+      BillsCompanion(
+        id: Value(id),
+        type: Value(type),
+        amount: Value(amount),
+        currency: Value(code),
+        accountAmount: Value(actual),
+        categoryId: Value(categoryId),
+        accountId: Value(accountId),
+        toAccountId: Value(toAccountId),
+        dateMs: Value(dateMs),
+        note: Value(note),
+        isAa: Value(aaGroupId != null),
+        aaGroupId: Value(aaGroupId),
+        settlementId: Value(settlementId),
+        createdAt: Value(createdAt ?? current?.createdAt ?? now),
+        updatedAt: Value(now),
+      ),
+    );
+  });
+
+  static String _currencyCode(String code) {
+    final currency = Currency.tryFromCode(code);
+    if (currency == null) throw StateError('不支持的币种');
+    return currency.code;
+  }
+
+  static void _checkCnyMoney(
+    String code,
+    Account account,
+    int amount,
+    int actual,
+  ) {
+    if (code != 'CNY' || account.currency != 'CNY' || actual != amount) {
+      throw StateError('AA 与结算暂仅支持 CNY 交易和 CNY 账户');
+    }
+  }
 
   Future<void> linkBillToAaGroup(String billId, String groupId) =>
-      (update(bills)..where((t) => t.id.equals(billId)))
-          .write(BillsCompanion(
-              isAa: const Value(true), aaGroupId: Value(groupId)));
+      transaction(() async {
+        await _checkAaBillNotSettled(billId);
+        final bill = await (select(
+          bills,
+        )..where((t) => t.id.equals(billId))).getSingleOrNull();
+        if (bill == null ||
+            bill.deletedAt != null ||
+            bill.type != 0 ||
+            bill.toAccountId != null ||
+            bill.settlementId != null) {
+          throw StateError('仅有效支出可关联 AA');
+        }
+        final account = await getAccount(bill.accountId);
+        if (account == null) throw StateError('所选账户不存在');
+        _checkCnyMoney(bill.currency, account, bill.amount, bill.accountAmount);
+        await (update(bills)..where((t) => t.id.equals(billId))).write(
+          BillsCompanion(isAa: const Value(true), aaGroupId: Value(groupId)),
+        );
+      });
 
   /// 结算收支仅改本机字段，不用页面快照重写金额或结算关联。
   Future<bool> updateSettlementBillLocalFields({
@@ -365,27 +485,40 @@ class AppDatabase extends _$AppDatabase {
     required String settlementId,
     required String accountId,
     required String note,
-  }) =>
-      transaction(() async {
-        if (accountId == kAaCreditAccountId) return false;
-        final account = await (select(accounts)
-              ..where((t) => t.id.equals(accountId)))
-            .getSingleOrNull();
-        if (account == null) return false;
-        final changed = await (update(bills)
-              ..where((t) =>
+  }) => transaction(() async {
+    if (accountId == kAaCreditAccountId) return false;
+    final account = await (select(
+      accounts,
+    )..where((t) => t.id.equals(accountId))).getSingleOrNull();
+    if (account == null || account.type == 4 || account.currency != 'CNY') {
+      return false;
+    }
+    final current = await (select(
+      bills,
+    )..where((t) => t.id.equals(billId))).getSingleOrNull();
+    if (current == null ||
+        current.currency != 'CNY' ||
+        current.accountAmount != current.amount) {
+      return false;
+    }
+    final changed =
+        await (update(bills)..where(
+              (t) =>
                   t.id.equals(billId) &
                   t.deletedAt.isNull() &
                   t.settlementId.equals(settlementId) &
                   t.aaGroupId.isNull() &
-                  t.type.isIn([0, 1])))
-            .write(BillsCompanion(
-              accountId: Value(accountId),
-              note: Value(note),
-              updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
-            ));
-        return changed == 1;
-      });
+                  t.type.isIn([0, 1]),
+            ))
+            .write(
+              BillsCompanion(
+                accountId: Value(accountId),
+                note: Value(note),
+                updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
+              ),
+            );
+    return changed == 1;
+  });
 
   Future<void> softDeleteBill(String id) => transaction(() async {
         await _checkAaBillNotSettled(id);
@@ -428,17 +561,39 @@ class AppDatabase extends _$AppDatabase {
     required int initBalance,
     required bool includeNetWorth,
     required int sort,
-  }) =>
-      into(accounts).insertOnConflictUpdate(AccountsCompanion(
+    String? currency,
+  }) => transaction(() async {
+    final current = await getAccount(id);
+    final code = _currencyCode(currency ?? current?.currency ?? 'CNY');
+    if ((type == 4 || id == kAaCreditAccountId) && code != 'CNY') {
+      throw StateError('AA 挂账账户仅支持 CNY');
+    }
+    if (current != null && code != current.currency) {
+      final reference =
+          await (select(bills)
+                ..where(
+                  (t) => t.accountId.equals(id) | t.toAccountId.equals(id),
+                )
+                ..limit(1))
+              .getSingleOrNull();
+      if (reference != null) throw StateError('账户已有账单引用，不能修改币种');
+    }
+    await into(accounts).insertOnConflictUpdate(
+      AccountsCompanion(
         id: Value(id),
         name: Value(name),
         emoji: Value(emoji),
         type: Value(type),
         initBalance: Value(initBalance),
+        currency: Value(code),
         includeNetWorth: Value(includeNetWorth),
         sort: Value(sort),
-        createdAt: Value(DateTime.now().millisecondsSinceEpoch),
-      ));
+        createdAt: Value(
+          current?.createdAt ?? DateTime.now().millisecondsSinceEpoch,
+        ),
+      ),
+    );
+  });
 
   Future<void> deleteAccount(String id) =>
       (delete(accounts)..where((t) => t.id.equals(id))).go();
@@ -510,6 +665,14 @@ class AppDatabase extends _$AppDatabase {
       final share = g.totalAmount ~/ 2;
       final linked = await billsOfAaGroup(g.id);
       for (final b in linked) {
+        final account = await getAccount(b.accountId);
+        // Do not let malformed historical associations block opening the app
+        // or overwrite a foreign amount through a CNY-only repair helper.
+        if (b.currency != 'CNY' ||
+            account?.currency != 'CNY' ||
+            b.accountAmount != b.amount) {
+          continue;
+        }
         // 垫付方的全额支出账单保持全额
         if (b.type == 0 && b.amount == g.totalAmount) continue;
         if (b.amount != share) await updateBillAmount(b.id, share);
@@ -579,16 +742,29 @@ class AppDatabase extends _$AppDatabase {
       .get();
 
   Future<void> updateBillAmount(String billId, int amount) =>
-      (update(bills)..where((t) => t.id.equals(billId))).write(BillsCompanion(
-          amount: Value(amount),
-          updatedAt: Value(DateTime.now().millisecondsSinceEpoch)));
+      _updateCnyBillAmount(billId, amount);
 
-  Future<void> updateBillAmountAndDate(
-          String billId, int amount, int dateMs) =>
-      (update(bills)..where((t) => t.id.equals(billId))).write(BillsCompanion(
-          amount: Value(amount),
-          dateMs: Value(dateMs),
-          updatedAt: Value(DateTime.now().millisecondsSinceEpoch)));
+  Future<void> updateBillAmountAndDate(String billId, int amount, int dateMs) =>
+      _updateCnyBillAmount(billId, amount, dateMs: dateMs);
+
+  Future<void> _updateCnyBillAmount(String billId, int amount, {int? dateMs}) =>
+      transaction(() async {
+        final bill = await (select(
+          bills,
+        )..where((t) => t.id.equals(billId))).getSingleOrNull();
+        if (bill == null) return;
+        final account = await getAccount(bill.accountId);
+        if (account == null || amount < 0) throw StateError('账户或金额无效');
+        _checkCnyMoney(bill.currency, account, bill.amount, bill.accountAmount);
+        await (update(bills)..where((t) => t.id.equals(billId))).write(
+          BillsCompanion(
+            amount: Value(amount),
+            accountAmount: Value(amount),
+            dateMs: dateMs == null ? const Value.absent() : Value(dateMs),
+            updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
+          ),
+        );
+      });
 
   /// 已关联到 AA 分摊组的账单 id 集合（流式，供「待入账」计算）
   Stream<Set<String>> watchLinkedAaGroupIds() => customSelect(
