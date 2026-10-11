@@ -5,7 +5,7 @@ class CategoryStatAmount {
   const CategoryStatAmount({required this.category, required this.amount});
 
   final Category category;
-  final int amount;
+  final BigInt amount;
 }
 
 class CategoryStatGroup {
@@ -19,8 +19,8 @@ class CategoryStatGroup {
 
   /// null represents both unassigned bills and missing historical categories.
   final Category? category;
-  final int amount;
-  final int directAmount;
+  final BigInt amount;
+  final BigInt directAmount;
   final bool hasChildren;
   final List<CategoryStatAmount> children;
 }
@@ -31,17 +31,18 @@ class CategoryStats {
     required Iterable<CategoryStatGroup> groups,
   }) : groups = List.unmodifiable(groups);
 
-  final int total;
+  final BigInt total;
   final List<CategoryStatGroup> groups;
 }
 
-/// Aggregates an already date-filtered collection in integer cents. Each bill
+/// Aggregates one transaction currency in exact integer minor units. Each bill
 /// belongs to one root and either its direct amount or one child, never both.
 /// The shared hierarchy keeps malformed old nodes bounded and read-only.
 CategoryStats aggregateCategoryStats({
   required Iterable<Bill> bills,
   required Iterable<Category> categories,
   required int type,
+  String currency = 'CNY',
 }) {
   if (type != 0 && type != 1) {
     throw ArgumentError.value(
@@ -52,24 +53,29 @@ CategoryStats aggregateCategoryStats({
   }
   final byId = {for (final category in categories) category.id: category};
   final hierarchy = CategoryHierarchy(byId.values);
-  final totals = <String?, int>{};
-  final direct = <String?, int>{};
-  final children = <String, Map<String, int>>{};
-  var total = 0;
+  final totals = <String?, BigInt>{};
+  final direct = <String?, BigInt>{};
+  final children = <String, Map<String, BigInt>>{};
+  var total = BigInt.zero;
   for (final bill in bills) {
-    if (bill.type != type || bill.deletedAt != null) continue;
+    if (bill.type != type ||
+        bill.deletedAt != null ||
+        bill.currency != currency) {
+      continue;
+    }
     final category = byId[bill.categoryId];
     // Match the existing monthly summary: AA receivables are internal income;
     // actual expenses (including historical kind=2 references) still count.
     if (type == 1 && category?.kind == 2) continue;
     final root = hierarchy.rootOf(category?.id);
-    totals[root?.id] = (totals[root?.id] ?? 0) + bill.amount;
-    total += bill.amount;
+    final amount = BigInt.from(bill.amount);
+    totals[root?.id] = (totals[root?.id] ?? BigInt.zero) + amount;
+    total += amount;
     if (root == null || root.id == category!.id) {
-      direct[root?.id] = (direct[root?.id] ?? 0) + bill.amount;
+      direct[root?.id] = (direct[root?.id] ?? BigInt.zero) + amount;
     } else {
       final amounts = children.putIfAbsent(root.id, () => {});
-      amounts[category.id] = (amounts[category.id] ?? 0) + bill.amount;
+      amounts[category.id] = (amounts[category.id] ?? BigInt.zero) + amount;
     }
   }
 
@@ -86,14 +92,14 @@ CategoryStats aggregateCategoryStats({
           CategoryStatGroup(
             category: byId[entry.key],
             amount: entry.value,
-            directAmount: direct[entry.key] ?? 0,
+            directAmount: direct[entry.key] ?? BigInt.zero,
             hasChildren:
                 entry.key != null &&
                 hierarchy.childrenOf(entry.key!).isNotEmpty,
             children:
                 [
                   for (final child
-                      in (children[entry.key] ?? <String, int>{}).entries)
+                      in (children[entry.key] ?? <String, BigInt>{}).entries)
                     CategoryStatAmount(
                       category: byId[child.key]!,
                       amount: child.value,

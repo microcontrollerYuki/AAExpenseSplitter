@@ -11,6 +11,7 @@ import '../recognition/bill_ocr.dart';
 import '../sync/aa_sync_service.dart';
 import '../theme.dart';
 import '../utils/account_selection.dart';
+import '../utils/bill_money.dart';
 import '../utils/money.dart';
 import '../widgets/category_picker.dart';
 import '../widgets/number_pad.dart';
@@ -273,6 +274,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final similar = await db.findSimilarBills(
       type: _type,
       amount: cents,
+      currency: 'CNY',
       dateMs: _date.millisecondsSinceEpoch,
       excludeId: widget.bill?.id,
     );
@@ -485,7 +487,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Text(
           '${d.month}月${d.day}日 ${two(d.hour)}:${two(d.minute)} · '
-          '$label · ${acc?.name ?? ''} · ¥${centsToText(b.amount)}',
+          '$label · ${acc?.name ?? ''} · ${displayCurrencyAmount(BigInt.from(b.amount), b.currency)}',
           style: const TextStyle(fontSize: 13),
         ),
       ));
@@ -500,7 +502,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('已存在 ${similar.length} 笔相似账单（同类型 · 同金额 · 同一天）：'),
+              Text('已存在 ${similar.length} 笔相似账单（同币种 · 同类型 · 同金额 · 同一天）：'),
               const SizedBox(height: 8),
               ...rows,
               if (similar.length > 3)

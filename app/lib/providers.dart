@@ -9,14 +9,17 @@ final databaseProvider = Provider<AppDatabase>((ref) {
   return db;
 });
 
-final aaSyncServiceProvider =
-    Provider<AaSyncService>((ref) => AaSyncService(ref.watch(databaseProvider)));
+final aaSyncServiceProvider = Provider<AaSyncService>(
+  (ref) => AaSyncService(ref.watch(databaseProvider)),
+);
 
 /// 配对信息与本机键值（myUid / myName / partnerName / pairSecret / 同步时间）
-final metaProvider = StreamProvider<Map<String, String>>((ref) => ref
-    .watch(databaseProvider)
-    .watchMeta()
-    .map((rows) => {for (final r in rows) r.key: r.value}));
+final metaProvider = StreamProvider<Map<String, String>>(
+  (ref) => ref
+      .watch(databaseProvider)
+      .watchMeta()
+      .map((rows) => {for (final r in rows) r.key: r.value}),
+);
 
 /// 全局选中的月份（明细页 / 图表页共享），1 号作为锚点
 class SelectedMonthNotifier extends Notifier<DateTime> {
@@ -34,17 +37,35 @@ class SelectedMonthNotifier extends Notifier<DateTime> {
   void shift(int delta) => state = DateTime(state.year, state.month + delta, 1);
 }
 
-final selectedMonthProvider =
-    NotifierProvider<SelectedMonthNotifier, DateTime>(SelectedMonthNotifier.new);
+final selectedMonthProvider = NotifierProvider<SelectedMonthNotifier, DateTime>(
+  SelectedMonthNotifier.new,
+);
+
+/// Shared display currency for monthly summaries and existing charts.
+/// Bills remain visible in their original currency; this never converts money.
+class SelectedCurrencyNotifier extends Notifier<String> {
+  @override
+  String build() => 'CNY';
+
+  void selectCurrency(String code) => state = code;
+}
+
+final selectedCurrencyProvider =
+    NotifierProvider<SelectedCurrencyNotifier, String>(
+      SelectedCurrencyNotifier.new,
+    );
 
 final accountsProvider = StreamProvider<List<Account>>(
-    (ref) => ref.watch(databaseProvider).watchAccounts());
+  (ref) => ref.watch(databaseProvider).watchAccounts(),
+);
 
 final categoriesProvider = StreamProvider<List<Category>>(
-    (ref) => ref.watch(databaseProvider).watchCategories());
+  (ref) => ref.watch(databaseProvider).watchCategories(),
+);
 
-final allBillsProvider =
-    StreamProvider<List<Bill>>((ref) => ref.watch(databaseProvider).watchAllBills());
+final allBillsProvider = StreamProvider<List<Bill>>(
+  (ref) => ref.watch(databaseProvider).watchAllBills(),
+);
 
 final monthBillsProvider = StreamProvider<List<Bill>>((ref) {
   final m = ref.watch(selectedMonthProvider);
@@ -54,11 +75,14 @@ final monthBillsProvider = StreamProvider<List<Bill>>((ref) {
 });
 
 final aaGroupsProvider = StreamProvider<List<AaGroup>>(
-    (ref) => ref.watch(databaseProvider).watchAaGroups());
+  (ref) => ref.watch(databaseProvider).watchAaGroups(),
+);
 
 final settlementsProvider = StreamProvider<List<Settlement>>(
-    (ref) => ref.watch(databaseProvider).watchSettlements());
+  (ref) => ref.watch(databaseProvider).watchSettlements(),
+);
 
 /// 已关联 AA 分摊组的账单 id 集合（判定伙伴账单是否已入账）
 final linkedAaGroupIdsProvider = StreamProvider<Set<String>>(
-    (ref) => ref.watch(databaseProvider).watchLinkedAaGroupIds());
+  (ref) => ref.watch(databaseProvider).watchLinkedAaGroupIds(),
+);

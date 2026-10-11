@@ -5,7 +5,8 @@ import '../data/app_database.dart';
 import '../data/category_hierarchy.dart';
 import '../providers.dart';
 import '../theme.dart';
-import '../utils/money.dart';
+import '../utils/balance.dart';
+import '../utils/bill_money.dart';
 import 'edit_bill_page.dart';
 
 /// Shared entry point for bills, account activity and future report details.
@@ -182,8 +183,12 @@ class BillDetailPage extends ConsumerWidget {
     final amountColor = bill.type == 0
         ? kExpenseColor
         : (bill.type == 1 ? kIncomeColor : Colors.black87);
-    final typeLabel = bill.type == 0 ? '支出' : (bill.type == 1 ? '收入' : '转账');
-    final sign = bill.type == 0 ? '-' : (bill.type == 1 ? '+' : '');
+    final typeLabel = switch (bill.type) {
+      0 => '支出',
+      1 => '收入',
+      2 => '转账',
+      _ => '余额调节',
+    };
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(18),
@@ -203,7 +208,7 @@ class BillDetailPage extends ConsumerWidget {
             fit: BoxFit.scaleDown,
             alignment: Alignment.centerLeft,
             child: Text(
-              '$sign¥ ${centsToText(bill.amount)}',
+              displayBillAmount(bill, prefix: true),
               style: TextStyle(
                 fontSize: 32,
                 fontWeight: FontWeight.bold,
@@ -234,12 +239,49 @@ class BillDetailPage extends ConsumerWidget {
   ) {
     final d = DateTime.fromMillisecondsSinceEpoch(bill.dateMs);
     String two(int v) => v.toString().padLeft(2, '0');
+    final incoming = transferIncomingAmount(bill, {
+      for (final account in [acc, toAcc].whereType<Account>())
+        account.id: account,
+    });
 
     final rows = <Widget>[
+      _row('交易币种', bill.currency.trim().isEmpty ? '未知币种' : bill.currency),
       _row('分类', cat == null ? categoryPath : '${cat.emoji} $categoryPath'),
       _row('账户', acc == null ? '—' : '${acc.emoji} ${acc.name}'),
-      if (bill.type == 2)
+      if (bill.type == 2) ...[
+        _row(
+          '转出金额',
+          acc == null
+              ? '待确认（出账账户缺失）'
+              : displayCurrencyAmount(
+                  BigInt.from(bill.accountAmount),
+                  acc.currency,
+                ),
+        ),
         _row('转入账户', toAcc == null ? '—' : '${toAcc.emoji} ${toAcc.name}'),
+        _row(
+          '转入金额',
+          incoming == null
+              ? '待确认（缺少有效入账金额）'
+              : displayCurrencyAmount(BigInt.from(incoming), toAcc!.currency),
+        ),
+      ] else if (acc == null ||
+          acc.currency != bill.currency ||
+          bill.accountAmount != bill.amount)
+        _row(
+          bill.type == 0
+              ? '实际扣款'
+              : bill.type == 1
+              ? '实际入账'
+              : '账户变动',
+          acc == null
+              ? '待确认（账户缺失）'
+              : displayCurrencyAmount(
+                  BigInt.from(bill.accountAmount),
+                  acc.currency,
+                  signed: bill.type == 3,
+                ),
+        ),
       _row(
         '时间',
         '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}',

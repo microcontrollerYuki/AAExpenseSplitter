@@ -26,6 +26,7 @@ class _DelayedSimilarBillsDatabase extends TestAppDatabase {
     required int amount,
     required int dateMs,
     String? excludeId,
+    String currency = 'CNY',
   }) async {
     lookupEntered.complete();
     await releaseLookup.future;

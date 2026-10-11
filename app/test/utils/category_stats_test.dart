@@ -78,21 +78,27 @@ void main() {
       categories: categories,
       type: 0,
     );
-    expect(result.total, 6000);
+    expect(result.total, BigInt.from(6000));
     expect(result.groups, hasLength(1));
     final food = result.groups.single;
     expect(food.category, categories.first);
-    expect(food.amount, 6000);
-    expect(food.directAmount, 1000);
+    expect(food.amount, BigInt.from(6000));
+    expect(food.directAmount, BigInt.from(1000));
     expect(food.hasChildren, isTrue);
     expect(food.children.map((child) => child.category.id), [
       'dinner',
       'lunch',
     ]);
-    expect(food.children.map((child) => child.amount), [3000, 2000]);
+    expect(food.children.map((child) => child.amount), [
+      BigInt.from(3000),
+      BigInt.from(2000),
+    ]);
     expect(
       food.directAmount +
-          food.children.fold<int>(0, (sum, child) => sum + child.amount),
+          food.children.fold<BigInt>(
+            BigInt.zero,
+            (sum, child) => sum + child.amount,
+          ),
       food.amount,
     );
   });
@@ -119,12 +125,12 @@ void main() {
       ],
       type: 1,
     );
-    expect(result.total, 525000);
+    expect(result.total, BigInt.from(525000));
     final salary = result.groups.single;
     expect(salary.category!.id, 'salary');
-    expect(salary.directAmount, 500000);
+    expect(salary.directAmount, BigInt.from(500000));
     expect(salary.children.single.category.id, 'bonus');
-    expect(salary.children.single.amount, 25000);
+    expect(salary.children.single.amount, BigInt.from(25000));
   });
 
   test('保持明细口径：AA支出和历史kind2支出保留，仅排kind2内部收入', () {
@@ -185,17 +191,17 @@ void main() {
       categories: categories,
       type: 0,
     );
-    expect(expense.total, 1900);
-    expect(statsGroup(expense, 'expense').amount, 1500);
-    expect(statsGroup(expense, 'internal').amount, 400);
+    expect(expense.total, BigInt.from(1900));
+    expect(statsGroup(expense, 'expense').amount, BigInt.from(1500));
+    expect(statsGroup(expense, 'internal').amount, BigInt.from(400));
     final income = aggregateCategoryStats(
       bills: bills,
       categories: categories,
       type: 1,
     );
-    expect(income.total, 1400);
+    expect(income.total, BigInt.from(1400));
     expect(income.groups.single.category!.id, 'income');
-    expect(income.groups.single.amount, 1400);
+    expect(income.groups.single.amount, BigInt.from(1400));
   });
 
   test('无分类和失效ID统一未分类一组，不重复或丢失金额', () {
@@ -210,14 +216,14 @@ void main() {
       categories: [statsCategory('valid')],
       type: 0,
     );
-    expect(result.total, 1500);
+    expect(result.total, BigInt.from(1500));
     expect(result.groups, hasLength(2));
     final uncategorized = statsGroup(result, null);
-    expect(uncategorized.amount, 1000);
-    expect(uncategorized.directAmount, 1000);
+    expect(uncategorized.amount, BigInt.from(1000));
+    expect(uncategorized.directAmount, BigInt.from(1000));
     expect(uncategorized.children, isEmpty);
     expect(uncategorized.hasChildren, isFalse);
-    expect(statsGroup(result, 'valid').amount, 500);
+    expect(statsGroup(result, 'valid').amount, BigInt.from(500));
   });
 
   test('同名不同ID的一级和二级各保留所属分组，不能按名称合并', () {
@@ -235,13 +241,13 @@ void main() {
       ],
       type: 0,
     );
-    expect(result.total, 60);
+    expect(result.total, BigInt.from(60));
     expect(result.groups.map((group) => group.category!.id), [
       'root-a',
       'root-b',
     ]);
-    expect(statsGroup(result, 'root-a').amount, 30);
-    expect(statsGroup(result, 'root-b').amount, 30);
+    expect(statsGroup(result, 'root-a').amount, BigInt.from(30));
+    expect(statsGroup(result, 'root-b').amount, BigInt.from(30));
     expect(statsGroup(result, 'root-a').children.single.category.id, 'child-a');
     expect(statsGroup(result, 'root-b').children.single.category.id, 'child-b');
   });
@@ -272,7 +278,7 @@ void main() {
       categories: categories,
       type: 0,
     );
-    expect(result.total, 3600);
+    expect(result.total, BigInt.from(3600));
     expect(result.groups.map((group) => group.category!.id).toSet(), {
       'root',
       'orphan',
@@ -282,8 +288,8 @@ void main() {
       'cycle-b',
       'third',
     });
-    expect(statsGroup(result, 'root').amount, 300);
-    expect(statsGroup(result, 'root').directAmount, 100);
+    expect(statsGroup(result, 'root').amount, BigInt.from(300));
+    expect(statsGroup(result, 'root').directAmount, BigInt.from(100));
     expect(statsGroup(result, 'root').children.single.category.id, 'child');
     for (final id in [
       'orphan',
@@ -298,7 +304,10 @@ void main() {
       expect(group.directAmount, group.amount, reason: id);
     }
     expect(
-      result.groups.fold<int>(0, (sum, group) => sum + group.amount),
+      result.groups.fold<BigInt>(
+        BigInt.zero,
+        (sum, group) => sum + group.amount,
+      ),
       result.total,
     );
   });
@@ -319,7 +328,7 @@ void main() {
       categories: categories,
       type: 0,
     );
-    expect(expense.total, 123);
+    expect(expense.total, BigInt.from(123));
     expect(expense.groups.single.category!.id, 'income-parent');
     expect(expense.groups.single.children.single.category.id, 'income-child');
     final income = aggregateCategoryStats(
@@ -327,7 +336,7 @@ void main() {
       categories: categories,
       type: 1,
     );
-    expect(income.total, 456);
+    expect(income.total, BigInt.from(456));
     expect(income.groups.single.category!.id, 'expense-parent');
     expect(income.groups.single.children.single.category.id, 'expense-child');
   });
@@ -398,11 +407,11 @@ void main() {
     );
     final direct = statsGroup(result, 'direct-parent');
     expect(direct.hasChildren, isTrue);
-    expect(direct.directAmount, 500);
+    expect(direct.directAmount, BigInt.from(500));
     expect(direct.children, isEmpty);
     final withChild = statsGroup(result, 'child-parent');
     expect(withChild.hasChildren, isTrue);
-    expect(withChild.directAmount, 0);
+    expect(withChild.directAmount, BigInt.zero);
     expect(withChild.children.single.category.id, 'billed-child');
     expect(statsGroup(result, 'leaf').hasChildren, isFalse);
     expect(statsGroup(result, 'leaf').children, isEmpty);
@@ -426,7 +435,7 @@ void main() {
       categories: categories,
       type: 0,
     );
-    expect(result.total, 3);
+    expect(result.total, BigInt.from(3));
     expect(() => result.groups.clear(), throwsUnsupportedError);
     expect(() => result.groups.single.children.clear(), throwsUnsupportedError);
     expect(
@@ -440,7 +449,7 @@ void main() {
         categories: const [],
         type: type,
       );
-      expect(empty.total, 0);
+      expect(empty.total, BigInt.zero);
       expect(empty.groups, isEmpty);
     }
     for (final type in [-1, 2, 3]) {

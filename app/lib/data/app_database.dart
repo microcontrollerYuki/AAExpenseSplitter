@@ -595,13 +595,16 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
       (update(bills)..where((t) => t.id.equals(id)))
           .write(BillsCompanion(deletedAt: Value<int?>(null)));
 
-  /// 查重：同类型、同金额、同一自然日的未删除账单（排除指定 id，编辑时排除自身）
+  /// 查重：同交易币种、同类型、同原币金额、同一自然日的未删除账单。
+  /// 旧调用默认人民币；账户实际额不用于跨币账单查重。
   Future<List<Bill>> findSimilarBills({
     required int type,
     required int amount,
     required int dateMs,
     String? excludeId,
+    String currency = 'CNY',
   }) async {
+    final code = _currencyCode(currency);
     final d = DateTime.fromMillisecondsSinceEpoch(dateMs);
     final start = DateTime(d.year, d.month, d.day).millisecondsSinceEpoch;
     final end =
@@ -609,9 +612,11 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
     final rows = await (select(bills)
           ..where((t) =>
               t.deletedAt.isNull() &
+              t.currency.equals(code) &
               t.type.equals(type) &
               t.amount.equals(amount) &
-              t.dateMs.isBetweenValues(start, end - 1)))
+              t.dateMs.isBiggerOrEqualValue(start) &
+              t.dateMs.isSmallerThanValue(end)))
         .get();
     return rows.where((b) => b.id != excludeId).toList();
   }
