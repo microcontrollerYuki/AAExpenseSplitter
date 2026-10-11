@@ -1,4 +1,5 @@
 import '../data/app_database.dart';
+import '../data/presets.dart';
 import 'currency.dart';
 
 /// 各账户币种的最小单位余额：期初 + 实际流入 - 实际流出 + 有符号调节。
@@ -20,23 +21,48 @@ Map<String, BigInt> computeExactBalances(
       if (b.containsKey(from)) b[from] = b[from]! + actual;
     } else if (t.type == 2) {
       if (b.containsKey(from)) b[from] = b[from]! - actual;
-      final to = t.toAccountId;
-      final source = byId[from];
-      final destination = byId[to];
-      // 正常写入只允许同币转账；历史缺转入仍保留转出的真实扣款。
-      // 无法确认来源币种或目标币种不同时，不跨币虚增目标账户余额。
-      if (destination != null &&
-          source != null &&
-          source.currency == destination.currency &&
-          t.currency == source.currency &&
-          t.accountAmount == t.amount) {
-        b[to!] = b[to]! + actual;
+      final incoming = transferIncomingAmount(t, byId);
+      if (incoming != null) {
+        b[t.toAccountId!] = b[t.toAccountId!]! + BigInt.from(incoming);
       }
     } else if (t.type == 3) {
       if (b.containsKey(from)) b[from] = b[from]! + actual;
     }
   }
   return b;
+}
+
+/// 入账额以转入账户最小单位保存。旧同币行可等额兜底；跨币缺额不猜汇率。
+/// 与账户动账明细共用，避免资产余额和月流入使用不同口径。
+int? transferIncomingAmount(Bill bill, Map<String, Account> accounts) {
+  if (bill.type != 2) return null;
+  final source = accounts[bill.accountId];
+  final target = accounts[bill.toAccountId];
+  if (source == null ||
+      target == null ||
+      bill.currency != source.currency ||
+      bill.amount != bill.accountAmount) {
+    return null;
+  }
+  final sameCurrency = source.currency == target.currency;
+  if (!sameCurrency &&
+      (bill.isAa ||
+          bill.aaGroupId != null ||
+          bill.settlementId != null ||
+          source.type == 4 ||
+          target.type == 4 ||
+          source.id == kAaCreditAccountId ||
+          target.id == kAaCreditAccountId)) {
+    return null;
+  }
+  final incoming = bill.toAccountAmount;
+  if (incoming == null) return sameCurrency ? bill.accountAmount : null;
+  if (incoming < 0 ||
+      (sameCurrency && incoming != bill.accountAmount) ||
+      (!sameCurrency && (incoming == 0 || bill.accountAmount <= 0))) {
+    return null;
+  }
+  return incoming;
 }
 
 /// 只合计计入净资产的账户，币种之间不折算、不相加。

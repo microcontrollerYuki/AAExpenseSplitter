@@ -457,15 +457,12 @@ void main() {
       expect(watched.map((s) => s.id).toList(), ['s2', 's1']);
 
       expect(await db.hasSettlementBill('s1'), isFalse);
-      await db.upsertBill(
-        id: 'sb',
-        type: 2,
-        amount: 100,
-        accountId: 'acc_cash',
-        toAccountId: 'acc_bank',
-        dateMs: 1,
-        settlementId: 's1',
-      );
+      // 历史结算转账仍可查询；新写入已禁止该关联组合。
+      await db.customStatement('''
+INSERT INTO bills (id, type, amount, currency, account_amount,
+  account_id, to_account_id, date_ms, settlement_id, created_at, updated_at)
+VALUES ('sb', 2, 100, 'CNY', 100, 'acc_cash', 'acc_bank', 1, 's1', 1, 1)
+''');
       expect(await db.hasSettlementBill('s1'), isTrue);
     });
   });

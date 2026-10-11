@@ -160,6 +160,17 @@ void main() {
       (id: 'legacy', type: 2, sid: 'legacy-sid', group: null),
       (id: 'mixed', type: 0, sid: 'mixed-sid', group: 'mixed-group'),
     ]) {
+      if (row.type == 2) {
+        // 用原始行保留旧结算转账的拒绝更新回归。
+        await db.customStatement('''
+INSERT INTO bills (id, type, amount, currency, account_amount,
+  account_id, to_account_id, category_id, date_ms, settlement_id,
+  created_at, updated_at)
+VALUES ('legacy', 2, 2500, 'CNY', 2500, 'acc_cash', 'acc_alipay',
+  'cat_food', 456789, 'legacy-sid', 456789, 456789)
+''');
+        continue;
+      }
       await db.upsertBill(
         id: row.id,
         type: row.type,
@@ -346,18 +357,29 @@ void main() {
     testWidgets('${c.label}仍锁定且不提供保存或删除', (tester) async {
       final db = TestAppDatabase();
       await db.getAllAccounts();
-      await db.upsertBill(
-        id: 'locked',
-        type: c.type,
-        amount: 1234,
-        categoryId: c.type == 1 ? 'cat_aa_marker' : 'cat_food',
-        accountId: 'acc_cash',
-        toAccountId: c.type == 2 ? 'acc_wechat' : null,
-        dateMs: 123456,
-        note: c.label,
-        aaGroupId: c.group,
-        settlementId: c.sid,
-      );
+      if (c.type == 2) {
+        // 只读历史样例：新写入已禁止本人转账带结算关联。
+        await db.customStatement('''
+INSERT INTO bills (id, type, amount, currency, account_amount,
+  account_id, to_account_id, date_ms, note, settlement_id,
+  created_at, updated_at)
+VALUES ('locked', 2, 1234, 'CNY', 1234, 'acc_cash', 'acc_wechat',
+  123456, ?, ?, 123456, 123456)
+''', [c.label, c.sid]);
+      } else {
+        await db.upsertBill(
+          id: 'locked',
+          type: c.type,
+          amount: 1234,
+          categoryId: c.type == 1 ? 'cat_aa_marker' : 'cat_food',
+          accountId: 'acc_cash',
+          toAccountId: c.type == 2 ? 'acc_wechat' : null,
+          dateMs: 123456,
+          note: c.label,
+          aaGroupId: c.group,
+          settlementId: c.sid,
+        );
+      }
       final before = (await db.getAllBills()).single;
       await pumpPage(tester, BillDetailPage(bill: before), db: db);
       await tester.tap(find.text('修改'));

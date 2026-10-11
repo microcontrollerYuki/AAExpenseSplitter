@@ -258,12 +258,9 @@ class AccountInfoPage extends ConsumerWidget {
     }
     if (bill.type != 2) return BigInt.zero;
     var change = isSource ? -actual : BigInt.zero;
-    final source = accounts[bill.accountId];
-    if (bill.toAccountId == account.id &&
-        source?.currency == account.currency &&
-        bill.currency == account.currency &&
-        bill.amount == bill.accountAmount) {
-      change += actual;
+    final incoming = transferIncomingAmount(bill, accounts);
+    if (bill.toAccountId == account.id && incoming != null) {
+      change += BigInt.from(incoming);
     }
     return change;
   }

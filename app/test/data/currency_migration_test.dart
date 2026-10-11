@@ -302,7 +302,7 @@ Future<_Rows> _currentRows(AppDatabase db) async {
 
 void main() {
   for (final version in [1, 2, 3]) {
-    test('真实 v$version 文件库升至 v4：CNY 原值、双金额和重开保持一致', () async {
+    test('真实 v$version 文件库升至 v5：CNY 原值、双金额和重开保持一致', () async {
       final directory = Directory.systemTemp.createTempSync(
         'currency_v${version}_',
       );
@@ -333,7 +333,7 @@ void main() {
         final userVersion = await first
             .customSelect('PRAGMA user_version')
             .getSingle();
-        expect(userVersion.read<int>('user_version'), 4);
+        expect(userVersion.read<int>('user_version'), 5);
         // Also detect the v1 → latest / v2 → latest status_note branch error.
         await first.getAllAaGroups();
         await first.getAllSettlements();
@@ -450,7 +450,7 @@ END
       final userVersion = await retry
           .customSelect('PRAGMA user_version')
           .getSingle();
-      expect(userVersion.read<int>('user_version'), 4);
+      expect(userVersion.read<int>('user_version'), 5);
     } finally {
       await retry.close();
     }

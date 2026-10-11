@@ -96,6 +96,7 @@ Bill mkBill(
   int? deletedAt,
   String currency = 'CNY',
   int? accountAmount,
+  int? toAccountAmount,
 }) =>
     Bill(
       id: id,
@@ -103,6 +104,7 @@ Bill mkBill(
       amount: amount,
       currency: currency,
       accountAmount: accountAmount ?? amount,
+      toAccountAmount: toAccountAmount,
       categoryId: categoryId,
       accountId: accountId,
       toAccountId: toAccountId,

@@ -96,13 +96,15 @@ class Categories extends Table {
 
 /// 账单：type 0 支出 / 1 收入 / 2 转账 / 3 余额调节(预留)
 /// amount 为交易币种最小单位；accountAmount 为账户币种实际收付款最小单位。
-/// 转账暂限双方同币种、双金额相等；AA 协议暂限 CNY。
+/// 转账 currency 固定为出账币种，amount == accountAmount；
+/// toAccountAmount 为转入账户币种的实际入账额，普通收支为空。AA 协议暂限 CNY。
 class Bills extends Table {
   TextColumn get id => text()();
   IntColumn get type => integer()();
   IntColumn get amount => integer()();
   TextColumn get currency => text().withDefault(const Constant('CNY'))();
   IntColumn get accountAmount => integer().withDefault(const Constant(0))();
+  IntColumn get toAccountAmount => integer().nullable()();
   TextColumn get categoryId => text().nullable()();
   TextColumn get accountId => text()();
   TextColumn get toAccountId => text().nullable()();
@@ -181,7 +183,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase({QueryExecutor? executor}) : super(executor ?? _openConnection());
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -201,6 +203,30 @@ class AppDatabase extends _$AppDatabase {
         // Includes deleted rows, transfers and AA. Existing cents already
         // are CNY minor units: never rescale them or change timestamps.
         await customStatement('UPDATE bills SET account_amount = amount');
+      }
+      if (from < 5) {
+        await m.addColumn(bills, bills.toAccountAmount);
+        // Only unambiguous ordinary same-currency transfers can inherit a
+        // credit amount. Include deleted rows without changing old fields.
+        // Missing/foreign/AA historical references stay null: never guess FX.
+        await customStatement('''
+UPDATE bills SET to_account_amount = account_amount
+WHERE type = 2 AND amount >= 0 AND amount = account_amount
+  AND is_aa = 0 AND aa_group_id IS NULL AND settlement_id IS NULL
+  AND currency IN ('CNY', 'USD', 'HKD', 'EUR', 'JPY', 'GBP')
+  AND NOT EXISTS (
+    SELECT 1 FROM categories
+    WHERE categories.id = bills.category_id AND categories.kind = 2
+  )
+  AND EXISTS (
+    SELECT 1 FROM accounts AS source, accounts AS target
+    WHERE source.id = bills.account_id AND target.id = bills.to_account_id
+      AND source.id <> target.id
+      AND source.type <> 4 AND target.type <> 4
+      AND source.id <> 'acc_aa_credit' AND target.id <> 'acc_aa_credit'
+      AND source.currency = bills.currency AND target.currency = bills.currency
+  )
+''');
       }
     }),
     beforeOpen: (details) async {
@@ -342,15 +368,18 @@ class AppDatabase extends _$AppDatabase {
     String? settlementId,
     String? currency,
     int? accountAmount,
+    int? toAccountAmount,
   }) => transaction(() async {
     await _checkAaBillNotSettled(id);
     final current = await (select(
       bills,
     )..where((t) => t.id.equals(id))).getSingleOrNull();
-    final code = _currencyCode(currency ?? current?.currency ?? 'CNY');
     final account = await getAccount(accountId);
     if (account == null) throw StateError('所选账户不存在，请重新选择');
     _currencyCode(account.currency);
+    final code = _currencyCode(
+      currency ?? (type == 2 ? account.currency : current?.currency ?? 'CNY'),
+    );
     if (type < 0 || type > 3 || (type != 3 && amount < 0)) {
       throw StateError('账单类型或金额无效');
     }
@@ -380,23 +409,56 @@ class AppDatabase extends _$AppDatabase {
       actual = supplied;
     }
     if (type != 3 && actual < 0) throw StateError('账户实际收付款额无效');
+    int? incoming;
     if (type == 2) {
       final target = toAccountId == null ? null : await getAccount(toAccountId);
       if (target == null || target.id == accountId) {
         throw StateError('请选择不同且有效的转入账户');
       }
-      if (!sameCurrency || target.currency != code) {
-        throw StateError('暂不支持跨币种转账');
+      _currencyCode(target.currency);
+      if (!sameCurrency || amount != actual) {
+        throw StateError('转账币种与金额必须采用出账账户的实际出账额');
       }
       if (account.type == 4 ||
           target.type == 4 ||
           account.id == kAaCreditAccountId ||
           target.id == kAaCreditAccountId ||
-          aaGroupId != null) {
-        throw StateError('转账不能关联 AA 或使用 AA 挂账账户');
+          aaGroupId != null ||
+          settlementId != null ||
+          current?.isAa == true ||
+          current?.aaGroupId != null ||
+          current?.settlementId != null) {
+        throw StateError('转账不能关联 AA、结算或使用 AA 挂账账户');
       }
-    } else if (toAccountId != null) {
-      throw StateError('仅转账可指定转入账户');
+      final transferUnchanged = current != null &&
+          current.type == type &&
+          current.accountId == accountId &&
+          current.toAccountId == toAccountId &&
+          current.currency == code &&
+          current.amount == amount &&
+          current.accountAmount == actual;
+      if (current != null && current.type == 2 &&
+          !transferUnchanged && toAccountAmount == null) {
+        final previousTarget = current.toAccountId == null
+            ? null
+            : await getAccount(current.toAccountId!);
+        if (previousTarget?.currency != current.currency) {
+          throw StateError('跨币种转账账户或金额变化，请重新确认入账金额');
+        }
+      }
+      if (target.currency == code) {
+        incoming = toAccountAmount ?? actual;
+        if (incoming != actual) {
+          throw StateError('同币种转账的出账与入账金额必须一致');
+        }
+      } else {
+        incoming = toAccountAmount ?? (transferUnchanged ? current.toAccountAmount : null);
+        if (actual <= 0 || incoming == null || incoming <= 0) {
+          throw StateError('跨币种转账请分别确认大于零的出账和入账金额');
+        }
+      }
+    } else if (toAccountId != null || toAccountAmount != null) {
+      throw StateError('仅转账可指定转入账户和入账金额');
     }
     if (categoryId != null) {
       final category = await (select(
@@ -427,6 +489,7 @@ class AppDatabase extends _$AppDatabase {
         amount: Value(amount),
         currency: Value(code),
         accountAmount: Value(actual),
+        toAccountAmount: Value(incoming),
         categoryId: Value(categoryId),
         accountId: Value(accountId),
         toAccountId: Value(toAccountId),
@@ -682,7 +745,8 @@ class AppDatabase extends _$AppDatabase {
         final account = await getAccount(b.accountId);
         // Do not let malformed historical associations block opening the app
         // or overwrite a foreign amount through a CNY-only repair helper.
-        if (b.currency != 'CNY' ||
+        if ((b.type != 0 && b.type != 1) ||
+            b.currency != 'CNY' ||
             account?.currency != 'CNY' ||
             b.accountAmount != b.amount) {
           continue;
@@ -770,10 +834,24 @@ class AppDatabase extends _$AppDatabase {
         final account = await getAccount(bill.accountId);
         if (account == null || amount < 0) throw StateError('账户或金额无效');
         _checkCnyMoney(bill.currency, account, bill.amount, bill.accountAmount);
+        if (bill.type == 2) {
+          if (bill.isAa || bill.aaGroupId != null || bill.settlementId != null) {
+            throw StateError('快捷转账更新不能改动 AA 或结算记录');
+          }
+          final target = bill.toAccountId == null
+              ? null
+              : await getAccount(bill.toAccountId!);
+          if (target == null || target.id == account.id || target.currency != 'CNY' ||
+              target.type == 4 || target.id == kAaCreditAccountId || account.type == 4 ||
+              account.id == kAaCreditAccountId) {
+            throw StateError('快捷金额更新仅支持真实人民币账户间的同币种转账');
+          }
+        }
         await (update(bills)..where((t) => t.id.equals(billId))).write(
           BillsCompanion(
             amount: Value(amount),
             accountAmount: Value(amount),
+            toAccountAmount: bill.type == 2 ? Value(amount) : const Value.absent(),
             dateMs: dateMs == null ? const Value.absent() : Value(dateMs),
             updatedAt: Value(DateTime.now().millisecondsSinceEpoch),
           ),
