@@ -10,6 +10,7 @@ import '../providers.dart';
 import '../recognition/bill_ocr.dart';
 import '../sync/aa_sync_service.dart';
 import '../theme.dart';
+import '../utils/account_selection.dart';
 import '../utils/money.dart';
 import '../widgets/category_picker.dart';
 import '../widgets/number_pad.dart';
@@ -229,7 +230,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     }
     final db = ref.read(databaseProvider);
     final aaService = ref.read(aaSyncServiceProvider);
-    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    final accounts = cnyEntryAccounts(
+      ref.read(accountsProvider).value ?? const <Account>[],
+      includeAaCredit: _type != 2,
+    );
     final categories =
         ref.read(categoriesProvider).value ?? const <Category>[];
 
@@ -238,18 +242,26 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     if (raw.isEmpty) return _snack('请输入金额');
     if (_hasOperator || !_validExpr(raw)) return _snack('非法参数');
     final cents = parseMoneyToCents(raw);
-    final accId = _accountId ?? (accounts.isNotEmpty ? accounts.first.id : '');
-    final toId = _toAccountId ?? (accounts.length > 1 ? accounts[1].id : '');
+    final accId = entryAccountId(accounts, _accountId) ?? '';
+    final toId = entryAccountId(
+      accounts, _toAccountId, excludeDefaultId: accId,
+    ) ?? '';
 
     final catId = _selectedCategory(categories);
 
     if (cents <= 0) return _snack('请输入金额');
-    if (accId.isEmpty) return _snack('请先在「我的 → 账户与资产」中创建账户');
+    if (accId.isEmpty) {
+      return _snack(accounts.isEmpty || _accountId == null
+          ? noCnyAccountMessage
+          : staleCnyAccountMessage);
+    }
     // 转账只允许本人钱包互转：双方必填、互不相同、且不得涉及「AA挂账」
     // （跨人资金往来应记收入/支出，不允许以转账形式出现）
     if (_type == 2) {
       if (accId.isEmpty || toId.isEmpty) {
-        return _snack('转账必须同时选择转出与转入账户');
+        return _snack(_toAccountId == null
+            ? '转账需至少两个不同的人民币账户'
+            : staleCnyAccountMessage);
       }
       if (toId == accId) return _snack('转入账户需与转出账户不同');
       if (accId == kAaCreditAccountId || toId == kAaCreditAccountId) {
@@ -286,6 +298,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           }
           if (current.categoryId != original.categoryId) {
             throw StateError('账单分类已转移，请返回重新打开');
+          }
+          if (await db.getAccount(current.accountId) == null) {
+            throw StateError('原账户已不存在，无法确认历史币种，暂不能修改该账单');
           }
         }
         await db.upsertBill(
@@ -379,6 +394,14 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   Future<void> _saveSettlementLocalFields() async {
     if (!_isSettlementEdit || _savingSettlement) return;
     final b = widget.bill!;
+    final accounts = cnyEntryAccounts(
+      ref.read(accountsProvider).value ?? const <Account>[],
+      includeAaCredit: false,
+    );
+    if (accounts.isEmpty) return _snack(noCnyAccountMessage);
+    if (!accounts.any((account) => account.id == (_accountId ?? b.accountId))) {
+      return _snack(staleCnyAccountMessage);
+    }
     setState(() => _savingSettlement = true);
     try {
       final db = ref.read(databaseProvider);
@@ -670,7 +693,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   }
 
   Future<void> _showOcrSheet(BillOcrResult result) async {
-    final accounts = ref.read(accountsProvider).value ?? const <Account>[];
+    final accounts = cnyEntryAccounts(
+      ref.read(accountsProvider).value ?? const <Account>[],
+      includeAaCredit: _type != 2,
+    );
     final categories =
         ref.read(categoriesProvider).value ?? const <Category>[];
     final accMatch = _guessAccountId(result, accounts);
@@ -691,7 +717,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         initialDate: result.detectedDateMs == null
             ? null
             : DateTime.fromMillisecondsSinceEpoch(result.detectedDateMs!),
-        initialAccountId: accMatch ?? _accountId,
+        initialAccountId: accMatch ?? entryAccountId(accounts, _accountId),
         initialCategoryId: catMatch == null
             ? _selectedCategory(categories)
             : categorySelection(categories, _type, catMatch),
@@ -721,11 +747,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   // ---------- 账户选择 ----------
 
   Future<void> _pickAccount({bool to = false}) async {
-    var accounts = ref.read(accountsProvider).value ?? const <Account>[];
-    // 转账和结算收支只允许真实钱包，排除「AA挂账」虚拟账户。
-    if (_type == 2 || _isSettlementEdit) {
-      accounts = accounts.where((a) => a.id != kAaCreditAccountId).toList();
-    }
+    final accounts = cnyEntryAccounts(
+      ref.read(accountsProvider).value ?? const <Account>[],
+      includeAaCredit: _type != 2 && !_isSettlementEdit,
+    );
     final picked = await showModalBottomSheet<String>(
       context: context,
       builder: (sctx) => SafeArea(
@@ -747,6 +772,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                   shrinkWrap: true,
                   padding: EdgeInsets.zero,
                   children: [
+                    if (accounts.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Text(noCnyAccountMessage),
+                      ),
                     for (final a in accounts)
                       ListTile(
                         leading: Text(a.emoji,
@@ -852,7 +882,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
 
   @override
   Widget build(BuildContext context) {
-    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    final allAccounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    final accounts = cnyEntryAccounts(
+      allAccounts,
+      includeAaCredit: _type != 2 && !_isSettlementEdit,
+    );
     final categories =
         ref.watch(categoriesProvider).value ?? const <Category>[];
     final meta = ref.watch(metaProvider).value ?? const <String, String>{};
@@ -861,6 +895,19 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final isTransfer = _type == 2;
 
     final b = widget.bill;
+    if (b != null &&
+        (b.currency != 'CNY' ||
+            allAccounts.any((account) =>
+                (account.id == b.accountId || account.id == b.toAccountId) &&
+                account.currency != 'CNY'))) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('暂不能编辑')),
+        body: const Padding(
+          padding: EdgeInsets.all(24),
+          child: Text('该账单涉及外币，币种记账功能开放后可编辑。现有金额和账户将保留。'),
+        ),
+      );
+    }
     if (_isSettlementEdit) {
       return _settlementEditor(accounts, categories);
     }
@@ -894,9 +941,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         aaGroup.ownerUid != myUid &&
         b.type == 0;
 
-    final effAccountId =
-        _accountId ?? (accounts.isNotEmpty ? accounts.first.id : null);
-    final effToId = _toAccountId ?? (accounts.length > 1 ? accounts[1].id : null);
+    final effAccountId = entryAccountId(accounts, _accountId);
+    final effToId = entryAccountId(
+      accounts, _toAccountId, excludeDefaultId: effAccountId,
+    );
     final effCatId = _selectedCategory(categories);
 
     Account? selAcc;
@@ -1477,7 +1525,9 @@ class _OcrSheetState extends State<_OcrSheet> {
             _row(
               Icons.account_balance_wallet,
               '账户',
-              acc == null ? '保持当前选择' : '${acc.emoji} ${acc.name}',
+              acc == null
+                  ? (widget.accounts.isEmpty ? noCnyAccountMessage : '保持当前选择')
+                  : '${acc.emoji} ${acc.name}',
               () async {
                 final id = await showModalBottomSheet<String>(
                   context: context,
@@ -1501,6 +1551,11 @@ class _OcrSheetState extends State<_OcrSheet> {
                               shrinkWrap: true,
                               padding: EdgeInsets.zero,
                               children: [
+                                if (widget.accounts.isEmpty)
+                                  const Padding(
+                                    padding: EdgeInsets.all(16),
+                                    child: Text(noCnyAccountMessage),
+                                  ),
                                 for (final a in widget.accounts)
                                   ListTile(
                                     leading: Text(a.emoji,

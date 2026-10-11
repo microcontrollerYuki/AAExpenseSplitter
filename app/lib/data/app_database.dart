@@ -562,8 +562,12 @@ class AppDatabase extends _$AppDatabase {
     required bool includeNetWorth,
     required int sort,
     String? currency,
+    Account? expected,
   }) => transaction(() async {
     final current = await getAccount(id);
+    if (expected != null && current != expected) {
+      throw StateError('账户已变化，请关闭后重新打开');
+    }
     final code = _currencyCode(currency ?? current?.currency ?? 'CNY');
     if ((type == 4 || id == kAaCreditAccountId) && code != 'CNY') {
       throw StateError('AA 挂账账户仅支持 CNY');
@@ -595,17 +599,27 @@ class AppDatabase extends _$AppDatabase {
     );
   });
 
-  Future<void> deleteAccount(String id) =>
-      (delete(accounts)..where((t) => t.id.equals(id))).go();
+  Future<void> deleteAccount(String id) => transaction(() async {
+    if (id == kAaCreditAccountId) {
+      throw StateError('AA 挂账固定账户不能删除');
+    }
+    final reference = await (select(bills)
+          ..where((t) => t.accountId.equals(id) | t.toAccountId.equals(id))
+          ..limit(1))
+        .getSingleOrNull();
+    if (reference != null) {
+      throw StateError('该账户仍有账单引用（含已删除账单），无法删除');
+    }
+    await (delete(accounts)..where((t) => t.id.equals(id))).go();
+  });
 
-  Future<int> billCountOfAccount(String accountId) async {
-    final rows = await (select(bills)
-          ..where((t) =>
-              t.deletedAt.isNull() &
-              (t.accountId.equals(accountId) |
-                  t.toAccountId.equals(accountId))))
-        .get();
-    return rows.length;
+  Future<int> billCountOfAccount(String accountId,
+      {bool includeDeleted = false}) async {
+    final query = select(bills)
+      ..where((t) => t.accountId.equals(accountId) |
+          t.toAccountId.equals(accountId));
+    if (!includeDeleted) query.where((t) => t.deletedAt.isNull());
+    return (await query.get()).length;
   }
 
   // ---------- AA 分摊（M2） ----------

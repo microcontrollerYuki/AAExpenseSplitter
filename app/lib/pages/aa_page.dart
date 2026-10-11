@@ -6,10 +6,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../data/app_database.dart';
-import '../data/presets.dart';
 import '../providers.dart';
 import '../sync/aa_sync_service.dart';
 import '../theme.dart';
+import '../utils/account_selection.dart';
 import '../utils/money.dart';
 import 'edit_bill_page.dart';
 
@@ -413,10 +413,11 @@ class _DashboardState extends ConsumerState<_Dashboard> {
 
   Future<void> _settleDialog(BuildContext context, WidgetRef ref, int net,
       List<Account> accounts, String partnerName) async {
-    final realAccounts =
-        accounts.where((a) => a.id != kAaCreditAccountId).toList();
+    final realAccounts = cnyEntryAccounts(accounts, includeAaCredit: false);
     if (realAccounts.isEmpty) {
-      AaPage.showSnack(context, '请先在「账本」中创建真实账户');
+      AaPage.showSnack(context, accounts.any((a) => a.currency != 'CNY')
+          ? noCnyAccountMessage
+          : '请先在「账本」中创建真实账户');
       return;
     }
     var selected = realAccounts.first.id;

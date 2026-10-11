@@ -34,15 +34,28 @@ int? parseMoneyToMinorUnits(String input, Currency currency) {
 
 /// Exact numeric text, without a currency symbol/code. Precision comes from the
 /// currency; [grouping] adds commas and [signed] adds '+' only to positive values.
-/// Splitting the int's text also handles the minimum negative int without abs().
 String formatMinorUnits(
   int units,
   Currency currency, {
   bool grouping = true,
   bool signed = false,
+}) => formatBigMinorUnits(
+  BigInt.from(units),
+  currency,
+  grouping: grouping,
+  signed: signed,
+);
+
+/// Exact formatting for aggregate balances that can exceed stored int64 values.
+/// Shares the numeric text logic with [formatMinorUnits], with no rounding.
+String formatBigMinorUnits(
+  BigInt units,
+  Currency currency, {
+  bool grouping = true,
+  bool signed = false,
 }) {
-  final negative = units < 0;
-  final prefix = negative ? '-' : (signed && units > 0 ? '+' : '');
+  final negative = units.isNegative;
+  final prefix = negative ? '-' : (signed && units > BigInt.zero ? '+' : '');
   final raw = units.toString();
   final digits = (negative ? raw.substring(1) : raw).padLeft(
     currency.minorUnitDigits + 1,
