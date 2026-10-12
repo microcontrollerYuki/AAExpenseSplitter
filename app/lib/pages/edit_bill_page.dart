@@ -12,13 +12,17 @@ import '../sync/aa_sync_service.dart';
 import '../theme.dart';
 import '../utils/account_selection.dart';
 import '../utils/bill_money.dart';
+import '../utils/currency.dart';
 import '../utils/money.dart';
+import '../utils/money_expression.dart';
 import '../widgets/category_picker.dart';
+import '../widgets/currency_picker.dart';
 import '../widgets/number_pad.dart';
+import '../widgets/ocr_entry_sheet.dart';
 import 'categories_page.dart';
 
 /// 记账 / 编辑账单页（钱迹风格布局）：
-/// 顶部类型页签 + 5列分类宫格 + 底部（备注 | 大金额 CNY / 属性胶囊 / 计算键盘）
+/// 顶部类型页签 + 分层分类宫格 + 原币金额 / 账户实际额 / 计算键盘。
 class EditBillPage extends ConsumerStatefulWidget {
   const EditBillPage({super.key, this.bill});
 
@@ -38,12 +42,56 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   late final TextEditingController _noteCtl;
   bool _aaOn = false;
   bool _savingSettlement = false;
+  bool _saving = false;
+  Currency _currency = Currency.cny;
+  int? _actualAmount;
+  String? _actualSignature;
+  bool _originalActual = false;
+
+  bool get _aaRestricted => _aaOn || widget.bill?.aaGroupId != null;
+
+  List<Account> _entryAccounts(Iterable<Account> accounts) =>
+      _type == 2 || _isSettlementEdit
+      ? cnyEntryAccounts(
+          accounts,
+          includeAaCredit: _type != 2 && !_isSettlementEdit,
+        )
+      : bookkeepingEntryAccounts(accounts, _currency, cnyOnly: _aaRestricted);
+
+  String? _effectiveAccountId(List<Account> accounts) => _type == 2
+      ? entryAccountId(accounts, _accountId)
+      : bookkeepingAccountId(accounts, _accountId, _currency);
+
+  void _invalidateActual() {
+    _actualAmount = null;
+    _actualSignature = null;
+    _originalActual = false;
+  }
+
+  String _signature(Account account, int units) =>
+      '$_type|${_currency.code}|$units|${account.id}|${account.currency}';
+
+  bool _actualConfirmed(Account account, int units) {
+    final b = widget.bill;
+    return _actualAmount != null &&
+        (_actualSignature == _signature(account, units) ||
+            (_originalActual &&
+                b != null &&
+                b.type == _type &&
+                b.currency == _currency.code &&
+                b.amount == units &&
+                b.accountId == account.id));
+  }
 
   bool get _useDefaultCategory =>
       widget.bill == null || widget.bill!.type != _type;
 
   String? _selectedCategory(List<Category> categories) => categorySelection(
-      categories, _type, _categoryId, fallbackToRoot: _useDefaultCategory);
+    categories,
+    _type,
+    _categoryId,
+    fallbackToRoot: _useDefaultCategory,
+  );
 
   bool get _isSettlementEdit {
     final b = widget.bill;
@@ -63,7 +111,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         : DateTime.fromMillisecondsSinceEpoch(b.dateMs);
     _noteCtl = TextEditingController(text: b?.note ?? '');
     if (b != null) {
-      _amount = centsToPlain(b.amount);
+      _currency = Currency.tryFromCode(b.currency) ?? Currency.cny;
+      _amount = formatMinorUnits(b.amount, _currency, grouping: false);
+      _actualAmount = b.accountAmount;
+      _originalActual = true;
       _categoryId = b.categoryId;
       _accountId = b.accountId;
       _toAccountId = b.toAccountId;
@@ -86,41 +137,19 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   /// 表达式求值触发键「=」：结果替换表达式显示；非法输入提示「非法参数」
   bool get _hasOperator => _amount.contains('+') || _amount.contains('-');
 
-  /// 表达式合法性：数字(＋/−数字)*，每段数字格式合法（拒绝空段/多余小数点等）
-  bool _validExpr(String t) {
-    if (t.isEmpty) return false;
-    for (final seg in t.split(RegExp(r'[+-]'))) {
-      if (!RegExp(r'^\d+(\.\d{1,2})?$').hasMatch(seg)) return false;
-    }
-    return true;
-  }
+  int _evaluatedCents() => evaluateMoneyExpression(_amount, _currency) ?? 0;
 
-  /// 去掉末尾多余小数点（用户输入「45.」不视为非法）
-  String _normalizeExpr(String t) =>
-      t.endsWith('.') ? t.substring(0, t.length - 1) : t;
-
-  /// 当前输入的求值金额（分）：表达式合法时取求值结果，否则 0
-  int _evaluatedCents() {
-    final t = _normalizeExpr(_amount.trim());
-    if (!_validExpr(t)) return 0;
-    final v = _evalExpr();
-    return v == null ? 0 : parseMoneyToCents(v.toStringAsFixed(2));
-  }
-
-  /// 按「=」：表达式求值并把结果显示为纯数字；未按 = 直接保存会报「非法参数」
   void _evaluate() {
-    final t = _normalizeExpr(_amount.trim());
-    if (t.isEmpty) return;
-    if (!_validExpr(t) || !_hasOperator) {
+    if (_amount.isEmpty) return;
+    final units = evaluateMoneyExpression(_amount, _currency);
+    if (!_hasOperator || units == null || units < 0) {
       _snack('非法参数');
       return;
     }
-    final v = _evalExpr();
-    if (v == null || v < 0) {
-      _snack('非法参数');
-      return;
-    }
-    setState(() => _amount = centsToPlain(parseMoneyToCents(v.toStringAsFixed(2))));
+    setState(() {
+      _invalidateActual();
+      _amount = formatMinorUnits(units, _currency, grouping: false);
+    });
   }
 
   void _onKey(String k) {
@@ -133,24 +162,30 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         if (_amount.isEmpty) return;
         final last = _amount[_amount.length - 1];
         if (last == '+' || last == '-') {
+          _invalidateActual();
           _amount = _amount.substring(0, _amount.length - 1) + k;
           return;
         }
         if (last == '.') _amount = _amount.substring(0, _amount.length - 1);
         if (_amount.isEmpty) return;
+        if (_amount.length >= 256) return;
+        _invalidateActual();
         _amount += k;
         return;
       }
       if (k == '.') {
+        if (_currency.minorUnitDigits == 0 || _amount.length >= 256) return;
         final seg = _segmentAfterOp();
         if (seg.contains('.')) return;
+        _invalidateActual();
         _amount += seg.isEmpty ? '0.' : '.';
         return;
       }
-      if (_amount.length >= 20) return;
+      if (_amount.length >= 256) return;
       final seg = _segmentAfterOp();
       final dot = seg.indexOf('.');
-      if (dot >= 0 && seg.length - dot - 1 >= 2) return;
+      if (dot >= 0 && seg.length - dot - 1 >= _currency.minorUnitDigits) return;
+      _invalidateActual();
       if (seg == '0') {
         _amount = _amount.substring(0, _amount.length - 1) + k;
         return;
@@ -161,37 +196,72 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
 
   void _onBackspace() {
     if (_amount.isEmpty) return;
-    setState(() => _amount = _amount.substring(0, _amount.length - 1));
+    setState(() {
+      _invalidateActual();
+      _amount = _amount.substring(0, _amount.length - 1);
+    });
   }
 
-  double? _evalExpr() {
-    final t = _amount.trim();
-    if (t.isEmpty) return null;
-    var sum = 0.0;
-    var sign = 1.0;
-    var numBuf = '';
-    for (final ch in t.split('')) {
-      if (ch == '+' || ch == '-') {
-        sum += sign * (double.tryParse(numBuf) ?? 0);
-        sign = ch == '-' ? -1.0 : 1.0;
-        numBuf = '';
-      } else {
-        numBuf += ch;
-      }
-    }
-    final last = double.tryParse(numBuf);
-    if (last == null) return numBuf.isEmpty ? sum : null;
-    return sum + sign * last;
-  }
-
-  /// 显示所键入的内容（表达式原样显示，按「=」后才变成求值结果）
-  String get _displayAmount => _amount.isEmpty ? '0.00' : _amount;
+  /// 只在按「=」后替换表达式，不自动换算用户输入。
+  String get _displayAmount => _amount.isEmpty
+      ? formatMinorUnits(0, _currency, grouping: false)
+      : _amount;
 
   // ---------- 日期 ----------
 
+  Future<void> _pickCurrency() async {
+    final accounts = _entryAccounts(
+      ref.read(accountsProvider).value ?? const <Account>[],
+    );
+    final originalAccountId = _effectiveAccountId(accounts);
+    final picked = await showEntryCurrencyPicker(context, selected: _currency);
+    if (picked == null || !mounted || picked == _currency) return;
+    if (_aaRestricted && picked != Currency.cny) {
+      _snack('AA 仅支持 CNY 交易和人民币账户');
+      return;
+    }
+    if (originalAccountId == kAaCreditAccountId && picked != Currency.cny) {
+      _snack('AA 挂账仅支持人民币，请先选择真实账户');
+      return;
+    }
+    setState(() {
+      _accountId = originalAccountId ?? _accountId;
+      _currency = picked;
+      _invalidateActual();
+    });
+  }
+
+  Future<void> _pickActualAmount(Account account) async {
+    final accountCurrency = Currency.tryFromCode(account.currency);
+    final units = evaluateMoneyExpression(_amount, _currency);
+    if (_hasOperator || units == null || units <= 0) {
+      _snack('请先输入有效交易金额，表达式需先按 =');
+      return;
+    }
+    if (accountCurrency == null) return;
+    final signature = _signature(account, units);
+    final amount = await _showActualAmountDialog(
+      context,
+      currency: accountCurrency,
+      income: _type == 1,
+      initial: _actualConfirmed(account, units) ? _actualAmount : null,
+    );
+    if (amount == null || !mounted || signature != _signature(account, units)) {
+      return;
+    }
+    setState(() {
+      _actualAmount = amount;
+      _actualSignature = signature;
+      _originalActual = false;
+      // 固定用于确认的账户，Provider 重排不能把实扣应用到其他钱包。
+      _accountId = account.id;
+    });
+  }
+
   String get _dateChipLabel {
     final now = DateTime.now();
-    final sameDay = _date.year == now.year &&
+    final sameDay =
+        _date.year == now.year &&
         _date.month == now.month &&
         _date.day == now.day;
     final hm =
@@ -205,7 +275,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       context: context,
       initialDate: _date,
       firstDate: DateTime(2000),
-      lastDate: DateTime(2100),
+      lastDate: DateTime(2100, 12, 31),
     );
     if (picked == null || !mounted) return;
     // 接着选时间，精确到分钟
@@ -216,53 +286,84 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     if (!mounted) return;
     setState(() {
       _date = time == null
-          ? DateTime(picked.year, picked.month, picked.day, _date.hour,
-              _date.minute)
-          : DateTime(picked.year, picked.month, picked.day, time.hour,
-              time.minute);
+          ? DateTime(
+              picked.year,
+              picked.month,
+              picked.day,
+              _date.hour,
+              _date.minute,
+            )
+          : DateTime(
+              picked.year,
+              picked.month,
+              picked.day,
+              time.hour,
+              time.minute,
+            );
     });
   }
 
   // ---------- 保存 / 删除 ----------
 
   Future<void> _save({bool again = false}) async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await _saveDraft(again: again);
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _saveDraft({bool again = false}) async {
     if (widget.bill?.settlementId != null) {
       return _saveSettlementLocalFields();
     }
     final db = ref.read(databaseProvider);
     final aaService = ref.read(aaSyncServiceProvider);
-    final accounts = cnyEntryAccounts(
+    final accounts = _entryAccounts(
       ref.read(accountsProvider).value ?? const <Account>[],
-      includeAaCredit: _type != 2,
     );
-    final categories =
-        ref.read(categoriesProvider).value ?? const <Category>[];
+    final categories = ref.read(categoriesProvider).value ?? const <Category>[];
 
     // 表达式必须按「=」求值后才是纯数字；带运算符或格式非法一律「非法参数」
-    final raw = _normalizeExpr(_amount.trim());
+    final raw = _amount.trim();
     if (raw.isEmpty) return _snack('请输入金额');
-    if (_hasOperator || !_validExpr(raw)) return _snack('非法参数');
-    final cents = parseMoneyToCents(raw);
-    final accId = entryAccountId(accounts, _accountId) ?? '';
-    final toId = entryAccountId(
-      accounts, _toAccountId, excludeDefaultId: accId,
-    ) ?? '';
+    final parsed = evaluateMoneyExpression(raw, _currency);
+    if (_hasOperator || parsed == null) return _snack('非法参数');
+    final cents = parsed;
+    final accId = _effectiveAccountId(accounts) ?? '';
+    final toId =
+        entryAccountId(accounts, _toAccountId, excludeDefaultId: accId) ?? '';
 
     final catId = _selectedCategory(categories);
 
     if (cents <= 0) return _snack('请输入金额');
     if (accId.isEmpty) {
-      return _snack(accounts.isEmpty || _accountId == null
-          ? noCnyAccountMessage
-          : staleCnyAccountMessage);
+      return _snack(
+        _type == 2
+            ? (accounts.isEmpty || _accountId == null
+                  ? noCnyAccountMessage
+                  : staleCnyAccountMessage)
+            : (accounts.isEmpty || _accountId == null
+                  ? noEntryAccountMessage
+                  : staleEntryAccountMessage),
+      );
     }
+    final account = accounts.firstWhere((a) => a.id == accId);
+    final crossCurrency = account.currency != _currency.code;
+    if (crossCurrency && !_actualConfirmed(account, cents)) {
+      return _snack('请确认账户实际收付款额');
+    }
+    final actual = crossCurrency ? _actualAmount! : cents;
+    if (actual <= 0) return _snack('账户实际收付款额须大于零');
     // 转账只允许本人钱包互转：双方必填、互不相同、且不得涉及「AA挂账」
     // （跨人资金往来应记收入/支出，不允许以转账形式出现）
     if (_type == 2) {
       if (accId.isEmpty || toId.isEmpty) {
-        return _snack(_toAccountId == null
-            ? '转账需至少两个不同的人民币账户'
-            : staleCnyAccountMessage);
+        return _snack(
+          _toAccountId == null ? '转账需至少两个不同的人民币账户' : staleCnyAccountMessage,
+        );
       }
       if (toId == accId) return _snack('转入账户需与转出账户不同');
       if (accId == kAaCreditAccountId || toId == kAaCreditAccountId) {
@@ -274,7 +375,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final similar = await db.findSimilarBills(
       type: _type,
       amount: cents,
-      currency: 'CNY',
+      currency: _currency.code,
       dateMs: _date.millisecondsSinceEpoch,
       excludeId: widget.bill?.id,
     );
@@ -291,10 +392,15 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       // 原始账单与共享组一起保存；遇到后台结算时不能留下部分改动。
       await db.transaction(() async {
         final original = widget.bill;
+        final currentAccount = await db.getAccount(accId);
+        if (currentAccount == null ||
+            currentAccount.currency != account.currency) {
+          throw StateError(staleEntryAccountMessage);
+        }
         if (original != null) {
-          final current = await (db.select(db.bills)
-                ..where((t) => t.id.equals(original.id)))
-              .getSingleOrNull();
+          final current = await (db.select(
+            db.bills,
+          )..where((t) => t.id.equals(original.id))).getSingleOrNull();
           if (current == null || current.deletedAt != null) {
             throw StateError('账单已删除，请返回后重试');
           }
@@ -304,11 +410,16 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           if (await db.getAccount(current.accountId) == null) {
             throw StateError('原账户已不存在，无法确认历史币种，暂不能修改该账单');
           }
+          if (current != original) {
+            throw StateError('账单已变化，请返回重新打开');
+          }
         }
         await db.upsertBill(
           id: billId,
           type: _type,
           amount: cents,
+          currency: _currency.code,
+          accountAmount: actual,
           categoryId: _type == 2 ? null : catId,
           accountId: accId,
           toAccountId: _type == 2 ? toId : null,
@@ -371,20 +482,23 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     if (ownerEdited) {
       final messenger = ScaffoldMessenger.of(context);
       Navigator.of(context).pop();
-      messenger.showSnackBar(const SnackBar(
-          content: Text('AA 账单已修改，请导出同步文件通知伙伴重新确认')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('AA 账单已修改，请导出同步文件通知伙伴重新确认')),
+      );
       return;
     }
     if (aaConverted) {
       final messenger = ScaffoldMessenger.of(context);
       Navigator.of(context).pop();
-      messenger.showSnackBar(const SnackBar(
-          content: Text('已转为 AA 平分账单，请导出同步文件通知伙伴')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('已转为 AA 平分账单，请导出同步文件通知伙伴')),
+      );
       return;
     }
     if (again) {
       setState(() {
         _amount = '';
+        _invalidateActual();
         _noteCtl.clear();
       });
       _snack('已保存，继续记下一笔');
@@ -439,11 +553,13 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         content: const Text('确定删除这笔账单吗？（回收站功能将在后续版本提供）'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('删除')),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
         ],
       ),
     );
@@ -463,14 +579,14 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
 
   void _snack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
   /// 相似账单确认弹窗：列出已有的相似账单，用户确认后才入账
   Future<bool> _confirmDuplicate(List<Bill> similar) async {
     final accounts = ref.read(accountsProvider).value ?? const <Account>[];
-    final categories =
-        ref.read(categoriesProvider).value ?? const <Category>[];
+    final categories = ref.read(categoriesProvider).value ?? const <Category>[];
     final accBy = {for (final a in accounts) a.id: a};
     final catBy = {for (final c in categories) c.id: c};
     String two(int v) => v.toString().padLeft(2, '0');
@@ -483,14 +599,16 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       final label = b.type == 2
           ? '转账'
           : (cat?.name ?? (b.type == 1 ? '收入' : '支出'));
-      rows.add(Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
-        child: Text(
-          '${d.month}月${d.day}日 ${two(d.hour)}:${two(d.minute)} · '
-          '$label · ${acc?.name ?? ''} · ${displayCurrencyAmount(BigInt.from(b.amount), b.currency)}',
-          style: const TextStyle(fontSize: 13),
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Text(
+            '${d.month}月${d.day}日 ${two(d.hour)}:${two(d.minute)} · '
+            '$label · ${acc?.name ?? ''} · ${displayCurrencyAmount(BigInt.from(b.amount), b.currency)}',
+            style: const TextStyle(fontSize: 13),
+          ),
         ),
-      ));
+      );
     }
 
     final ok = await showDialog<bool>(
@@ -508,9 +626,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
               if (similar.length > 3)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Text('…等共 ${similar.length} 笔',
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.grey)),
+                  child: Text(
+                    '…等共 ${similar.length} 笔',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
                 ),
               const SizedBox(height: 8),
               const Text('仍要将这笔计入账单吗？'),
@@ -519,11 +638,13 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(dctx, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(dctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(dctx, true),
-              child: const Text('仍要保存')),
+            onPressed: () => Navigator.pop(dctx, true),
+            child: const Text('仍要保存'),
+          ),
         ],
       ),
     );
@@ -554,39 +675,58 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       ),
     );
     if (source == null || !mounted) return;
-    final picked =
-        await ImagePicker().pickImage(source: source, maxWidth: 1600);
-    if (picked == null || !mounted) return;
-
-    showDialog(
+    final picked = await ImagePicker().pickImage(
+      source: source,
+      maxWidth: 1600,
+    );
+    if (picked == null ||
+        !mounted ||
+        ModalRoute.of(context)?.isCurrent != true) {
+      return;
+    }
+    final navigator = Navigator.of(context);
+    final editorRoute = ModalRoute.of(context);
+    final loadingRoute = DialogRoute<void>(
       context: context,
       barrierDismissible: false,
       builder: (_) => const Dialog(
         child: Padding(
           padding: EdgeInsets.all(24),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            SizedBox(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
                 width: 22,
                 height: 22,
-                child: CircularProgressIndicator(strokeWidth: 2.5)),
-            SizedBox(width: 16),
-            Text('正在识别…'),
-          ]),
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+              SizedBox(width: 16),
+              Text('正在识别…'),
+            ],
+          ),
         ),
       ),
     );
+    navigator.push(loadingRoute);
+    bool closeLoading() {
+      if (loadingRoute.navigator == null || !loadingRoute.isActive) {
+        return false;
+      }
+      final wasCurrent = loadingRoute.isCurrent;
+      navigator.removeRoute(loadingRoute);
+      return wasCurrent;
+    }
+
     final BillOcrResult result;
     try {
       result = await recognizeBill(picked.path);
-    } catch (e) {
-      if (mounted) {
-        Navigator.of(context).pop();
-        _snack('识别失败：$e');
+    } catch (_) {
+      if (mounted && closeLoading() && editorRoute?.isCurrent == true) {
+        _snack('识别失败，请重试');
       }
       return;
     }
-    if (!mounted) return;
-    Navigator.of(context).pop();
+    if (!mounted || !closeLoading() || editorRoute?.isCurrent != true) return;
     await _showOcrSheet(result);
   }
 
@@ -613,8 +753,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         final t = '$l $next';
         final m = byName(t);
         if (m != null) return m;
-        if (RegExp('储蓄卡|借记卡|信用卡|银行|招行|招商|工商|建设|农业|中行|交行')
-            .hasMatch(t)) {
+        if (RegExp('储蓄卡|借记卡|信用卡|银行|招行|招商|工商|建设|农业|中行|交行').hasMatch(t)) {
           final b = bank();
           if (b != null) return b;
         }
@@ -650,8 +789,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           if (a.name.contains('微信')) return a.id;
         }
       }
-      if (l.contains('支付宝') && !l.contains('服务') ||
-          l.contains('余额宝')) {
+      if (l.contains('支付宝') && !l.contains('服务') || l.contains('余额宝')) {
         for (final a in accounts) {
           if (a.name.contains('支付宝')) return a.id;
         }
@@ -695,31 +833,26 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   }
 
   Future<void> _showOcrSheet(BillOcrResult result) async {
-    final accounts = cnyEntryAccounts(
+    final accounts = _entryAccounts(
       ref.read(accountsProvider).value ?? const <Account>[],
-      includeAaCredit: _type != 2,
     );
-    final categories =
-        ref.read(categoriesProvider).value ?? const <Category>[];
+    final categories = ref.read(categoriesProvider).value ?? const <Category>[];
     final accMatch = _guessAccountId(result, accounts);
     final catMatch = _guessCategoryId(result, categories);
-    debugPrint('[OCR] source=${result.source} '
-        'merchant=${result.merchantGuess} '
-        'accMatch=$accMatch catMatch=$catMatch');
-
-    final adopted = await showModalBottomSheet<_OcrAdoptResult>(
+    final first = result.amounts.isEmpty ? null : result.amounts.first;
+    final adopted = await showModalBottomSheet<OcrAdoptResult>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _OcrSheet(
+      builder: (_) => OcrEntrySheet(
         candidates: result.amounts,
-        initialAmount: result.amounts.isEmpty
-            ? ''
-            : result.amounts.first.toStringAsFixed(2),
+        initialAmount: first?.amountText ?? '',
+        initialCurrency: first?.currency,
+        cnyOnly: _type == 2 || _aaRestricted,
         initialNote: result.noteSuggestion ?? result.merchantGuess,
         initialDate: result.detectedDateMs == null
             ? null
             : DateTime.fromMillisecondsSinceEpoch(result.detectedDateMs!),
-        initialAccountId: accMatch ?? entryAccountId(accounts, _accountId),
+        initialAccountId: accMatch ?? _effectiveAccountId(accounts),
         initialCategoryId: catMatch == null
             ? _selectedCategory(categories)
             : categorySelection(categories, _type, catMatch),
@@ -729,15 +862,20 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         previewLines: result.lines,
       ),
     );
-
     if (adopted == null || !mounted) return;
-    final cents = parseMoneyToCents(adopted.amountText);
-    if (cents <= 0) {
+    if ((_type == 2 || _aaRestricted) && adopted.currency != Currency.cny) {
+      _snack('AA 与当前转账入口仅支持人民币');
+      return;
+    }
+    final units = parseMoneyToMinorUnits(adopted.amountText, adopted.currency);
+    if (units == null || units <= 0) {
       _snack('金额无效，请手动输入后保存');
       return;
     }
     setState(() {
-      _amount = centsToPlain(cents);
+      _invalidateActual();
+      _currency = adopted.currency;
+      _amount = formatMinorUnits(units, _currency, grouping: false);
       _noteCtl.text = adopted.noteText;
       if (adopted.date != null) _date = adopted.date!;
       if (adopted.accountId != null) _accountId = adopted.accountId;
@@ -749,9 +887,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   // ---------- 账户选择 ----------
 
   Future<void> _pickAccount({bool to = false}) async {
-    final accounts = cnyEntryAccounts(
+    final accounts = _entryAccounts(
       ref.read(accountsProvider).value ?? const <Account>[],
-      includeAaCredit: _type != 2 && !_isSettlementEdit,
     );
     final picked = await showModalBottomSheet<String>(
       context: context,
@@ -759,15 +896,20 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         child: ConstrainedBox(
           // 账户多时不能顶破屏幕：限高 + 内部滚动（修复 bottom overflowed）
           constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(sctx).size.height * 0.6),
+            maxHeight: MediaQuery.of(sctx).size.height * 0.6,
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Padding(
                 padding: const EdgeInsets.all(12),
-                child: Text(to ? '选择转入账户' : '选择账户',
-                    style: const TextStyle(
-                        fontSize: 15, fontWeight: FontWeight.w600)),
+                child: Text(
+                  to ? '选择转入账户' : '选择账户',
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
               Flexible(
                 child: ListView(
@@ -775,15 +917,22 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                   padding: EdgeInsets.zero,
                   children: [
                     if (accounts.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Text(noCnyAccountMessage),
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Text(
+                          _type == 2 || _isSettlementEdit
+                              ? noCnyAccountMessage
+                              : noEntryAccountMessage,
+                        ),
                       ),
                     for (final a in accounts)
                       ListTile(
-                        leading: Text(a.emoji,
-                            style: const TextStyle(fontSize: 22)),
+                        leading: Text(
+                          a.emoji,
+                          style: const TextStyle(fontSize: 22),
+                        ),
                         title: Text(a.name),
+                        subtitle: Text(a.currency),
                         onTap: () => Navigator.pop(sctx, a.id),
                       ),
                   ],
@@ -795,11 +944,12 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         ),
       ),
     );
-    if (picked == null) return;
+    if (picked == null || !mounted) return;
     setState(() {
       if (to) {
         _toAccountId = picked;
       } else {
+        if (_accountId != picked) _invalidateActual();
         _accountId = picked;
       }
     });
@@ -825,7 +975,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         leading: IconButton(
           tooltip: '关闭',
           icon: const Icon(Icons.close),
-          onPressed: _savingSettlement ? null : () => Navigator.of(context).pop(),
+          onPressed: _savingSettlement
+              ? null
+              : () => Navigator.of(context).pop(),
         ),
       ),
       body: SafeArea(
@@ -885,10 +1037,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   @override
   Widget build(BuildContext context) {
     final allAccounts = ref.watch(accountsProvider).value ?? const <Account>[];
-    final accounts = cnyEntryAccounts(
-      allAccounts,
-      includeAaCredit: _type != 2 && !_isSettlementEdit,
-    );
+    final accounts = _entryAccounts(allAccounts);
     final categories =
         ref.watch(categoriesProvider).value ?? const <Category>[];
     final meta = ref.watch(metaProvider).value ?? const <String, String>{};
@@ -897,16 +1046,27 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final isTransfer = _type == 2;
 
     final b = widget.bill;
+    final hasForeignAccount =
+        b != null &&
+        allAccounts.any(
+          (a) =>
+              (a.id == b.accountId || a.id == b.toAccountId) &&
+              a.currency != 'CNY',
+        );
     if (b != null &&
-        (b.currency != 'CNY' ||
-            allAccounts.any((account) =>
-                (account.id == b.accountId || account.id == b.toAccountId) &&
-                account.currency != 'CNY'))) {
+        (Currency.tryFromCode(b.currency) == null ||
+            allAccounts.any(
+              (a) =>
+                  a.id == b.accountId &&
+                  Currency.tryFromCode(a.currency) == null,
+            ) ||
+            ((b.type == 2 || b.settlementId != null || b.aaGroupId != null) &&
+                (b.currency != 'CNY' || hasForeignAccount)))) {
       return Scaffold(
         appBar: AppBar(title: const Text('暂不能编辑')),
         body: const Padding(
           padding: EdgeInsets.all(24),
-          child: Text('该账单涉及外币，币种记账功能开放后可编辑。现有金额和账户将保留。'),
+          child: Text('该历史账单的币种或关联尚不能安全编辑，现有金额和账户将保留。'),
         ),
       );
     }
@@ -921,7 +1081,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       }
       if (aaGroup == null || aaGroup.settled) {
         return _AaLockedView(
-          bill: b!, accounts: accounts, categories: categories,
+          bill: b!,
+          accounts: accounts,
+          categories: categories,
           message: aaGroup?.settled == true
               ? '该 AA 账单已结算，为保持结算一致，不能再修改或删除。'
               : '正在读取 AA 关联记录；如无法加载，请返回后重试。',
@@ -929,23 +1091,31 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       }
     }
     // 旧结算转账、AA 伴生应收及异常混合关联保持只读。
-    final lockedAa = b != null &&
+    final lockedAa =
+        b != null &&
         ((b.aaGroupId != null && b.type == 1) || b.settlementId != null);
     if (lockedAa) {
-      return _AaLockedView(
-          bill: b, accounts: accounts, categories: categories);
+      return _AaLockedView(bill: b, accounts: accounts, categories: categories);
     }
 
     final isAaOwnerEdit =
-        aaGroup != null && b != null && aaGroup.ownerUid == myUid && b.type == 0;
-    final isAaShareEdit = aaGroup != null &&
+        aaGroup != null &&
+        b != null &&
+        aaGroup.ownerUid == myUid &&
+        b.type == 0;
+    final isAaShareEdit =
+        aaGroup != null &&
         b != null &&
         aaGroup.ownerUid != myUid &&
         b.type == 0;
 
-    final effAccountId = entryAccountId(accounts, _accountId);
+    final effAccountId = _effectiveAccountId(accounts);
+    // 首次展示后固定默认钱包；列表刷新/重排不能替用户换账户。
+    if (_accountId == null && effAccountId != null) _accountId = effAccountId;
     final effToId = entryAccountId(
-      accounts, _toAccountId, excludeDefaultId: effAccountId,
+      accounts,
+      _toAccountId,
+      excludeDefaultId: effAccountId,
     );
     final effCatId = _selectedCategory(categories);
 
@@ -968,14 +1138,16 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     if (isTransfer) {
       if (selAcc != null && selToAcc != null && centsNow > 0) {
         hints.add(
-            '「${selAcc.name}」→「${selToAcc.name}」¥ ${centsToText(centsNow)}');
+          '「${selAcc.name}」→「${selToAcc.name}」¥ ${centsToText(centsNow)}',
+        );
       }
     } else {
       if (_aaOn && _type == 0 && centsNow > 0) {
         // 奇数总额多出的 1 分归垫付方（我）承担：伙伴份额向下取整
         final partnerShare = AaSyncService.shareOfNonPayer(centsNow);
         hints.add(
-            'AA平分：我 ¥${centsToText(centsNow - partnerShare)} / 伙伴 ¥${centsToText(partnerShare)}');
+          'AA平分：我 ¥${centsToText(centsNow - partnerShare)} / 伙伴 ¥${centsToText(partnerShare)}',
+        );
       }
     }
 
@@ -990,209 +1162,268 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         centerTitle: true,
         title: Row(
           mainAxisSize: MainAxisSize.min,
-          children: [
-            _typeTab(0, '支出'),
-            _typeTab(1, '收入'),
-            _typeTab(2, '转账'),
-          ],
+          children: [_typeTab(0, '支出'), _typeTab(1, '收入'), _typeTab(2, '转账')],
         ),
         actions: [
           IconButton(
-              icon: const Icon(Icons.photo_camera_outlined),
-              tooltip: '图片识别记账',
-              onPressed: _pickOcrImage),
+            icon: const Icon(Icons.photo_camera_outlined),
+            tooltip: '图片识别记账',
+            onPressed: _saving ? null : _pickOcrImage,
+          ),
           if (widget.bill != null &&
               widget.bill!.aaGroupId == null &&
               widget.bill!.settlementId == null)
             IconButton(
-                icon: const Icon(Icons.delete_outline), onPressed: _delete),
+              icon: const Icon(Icons.delete_outline),
+              onPressed: _delete,
+            ),
         ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            if (isAaOwnerEdit || isAaShareEdit)
-              Container(
-                width: double.infinity,
-                margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: kPrimaryColor.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.sync, size: 16, color: kPrimaryColor),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        isAaOwnerEdit
-                            ? 'AA 账单 · 保存后请导出同步文件，伙伴将重新确认'
-                            : 'AA 份额账单 · 金额与日期由伙伴账单决定，可修改账户/分类/备注（仅本机）',
-                        style: const TextStyle(
-                            fontSize: 12, color: kPrimaryColor),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            Expanded(
-              child: isTransfer
-                  ? const SizedBox.shrink()
-                  : CategoryPicker(
-                      key: ValueKey('category-picker-$_type'),
-                      categories: categories,
-                      kind: _type,
-                      selectedId: effCatId,
-                      fallbackToRoot: _useDefaultCategory,
-                      onSelected: (id) => setState(() => _categoryId = id),
-                      onManage: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                            builder: (_) => const CategoriesPage()),
-                      ),
-                    ),
-            ),
-            Container(
-              color: Colors.grey.shade100,
-              padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // 备注 | 大金额
-                  LayoutBuilder(builder: (context, constraints) => Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
+      body: AbsorbPointer(
+        absorbing: _saving,
+        child: SafeArea(
+          child: Column(
+            children: [
+              if (isAaOwnerEdit || isAaShareEdit)
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: kPrimaryColor.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
                     children: [
+                      const Icon(Icons.sync, size: 16, color: kPrimaryColor),
+                      const SizedBox(width: 6),
                       Expanded(
-                        child: TextField(
-                          controller: _noteCtl,
-                          enableInteractiveSelection: true,
-                          maxLines: 1,
-                          textInputAction: TextInputAction.done,
-                          style: const TextStyle(fontSize: 14),
-                          decoration: const InputDecoration(
-                            hintText: '点此输入备注…',
-                            border: InputBorder.none,
-                            isDense: true,
+                        child: Text(
+                          isAaOwnerEdit
+                              ? 'AA 账单 · 保存后请导出同步文件，伙伴将重新确认'
+                              : 'AA 份额账单 · 金额与日期由伙伴账单决定，可修改账户/分类/备注（仅本机）',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: kPrimaryColor,
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      ConstrainedBox(
-                        constraints: BoxConstraints(
-                            maxWidth: constraints.maxWidth * 0.65),
-                        child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          alignment: Alignment.centerRight,
-                          child: Text(
-                            _displayAmount,
-                            style: TextStyle(
-                                fontSize: 32,
-                                fontWeight: FontWeight.bold,
-                                color: amountColor),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      const Text(' CNY',
-                          style:
-                              TextStyle(fontSize: 13, color: Colors.grey)),
                     ],
-                  )),
-                  if (hints.isNotEmpty)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.only(top: 2, bottom: 4),
-                      child: Text(
-                        hints.join(' · '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style:
-                            const TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                ),
+              Expanded(
+                child: isTransfer
+                    ? const SizedBox.shrink()
+                    : CategoryPicker(
+                        key: ValueKey('category-picker-$_type'),
+                        categories: categories,
+                        kind: _type,
+                        selectedId: effCatId,
+                        fallbackToRoot: _useDefaultCategory,
+                        onSelected: (id) => setState(() => _categoryId = id),
+                        onManage: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const CategoriesPage(),
+                          ),
+                        ),
                       ),
-                    ),
-                  // 属性胶囊行
-                  SizedBox(
-                    height: 44,
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
+              ),
+              Container(
+                color: Colors.grey.shade100,
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // 备注 | 大金额
+                    LayoutBuilder(
+                      builder: (context, constraints) => Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          if (isTransfer) ...[
-                            _accountChip(
-                                '出 · ${selAcc?.name ?? '选择'}',
-                                selAcc?.emoji,
-                                () => _pickAccount()),
-                            _accountChip(
-                                '入 · ${selToAcc?.name ?? '选择'}',
-                                selToAcc?.emoji,
-                                () => _pickAccount(to: true)),
-                          ] else ...[
-                            _accountChip(
-                                selAcc?.name ?? '选择账户',
-                                selAcc?.emoji,
-                                () => _pickAccount()),
-                            // AA 开关：仅新建账单或普通账单（可后补转换）显示；已是 AA 账单的编辑态隐藏
-    if (paired && _type == 0 && widget.bill?.aaGroupId == null)
-                              Padding(
-                                padding: const EdgeInsets.only(right: 8),
-                                child: FilterChip(
-                                  label: const Text('🤝 AA平分'),
-                                  selected: _aaOn,
-                                  onSelected: (v) =>
-                                      setState(() => _aaOn = v),
-                                ),
-                              ),
-                            Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: ActionChip(
-                                label: Text(_dateChipLabel),
-                                onPressed:
-                                    isAaShareEdit ? null : _pickDate,
+                          Expanded(
+                            child: TextField(
+                              controller: _noteCtl,
+                              enableInteractiveSelection: true,
+                              maxLines: 1,
+                              textInputAction: TextInputAction.done,
+                              style: const TextStyle(fontSize: 14),
+                              decoration: const InputDecoration(
+                                hintText: '点此输入备注…',
+                                border: InputBorder.none,
+                                isDense: true,
                               ),
                             ),
-                          ],
+                          ),
+                          const SizedBox(width: 8),
+                          ConstrainedBox(
+                            constraints: BoxConstraints(
+                              maxWidth: constraints.maxWidth * 0.65,
+                            ),
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerRight,
+                              child: Text(
+                                _displayAmount,
+                                style: TextStyle(
+                                  fontSize: 32,
+                                  fontWeight: FontWeight.bold,
+                                  color: amountColor,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            ' ${_currency.code}',
+                            style: TextStyle(fontSize: 13, color: Colors.grey),
+                          ),
                         ],
                       ),
                     ),
-                  ),
-                  if (isAaShareEdit)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: SizedBox(
+                    if (hints.isNotEmpty)
+                      Container(
                         width: double.infinity,
-                        height: 48,
-                        child: FilledButton(
-                          style: FilledButton.styleFrom(
-                              backgroundColor: kPrimaryColor),
-                          onPressed: () => _save(),
-                          child: const Text('保存'),
+                        padding: const EdgeInsets.only(top: 2, bottom: 4),
+                        child: Text(
+                          hints.join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey,
+                          ),
                         ),
                       ),
-                    )
-                  else
-                    NumberPad(
-                      onKey: _onKey,
-                      onBackspace: _onBackspace,
-                      onClear: () => setState(() => _amount = ''),
-                      onSave: () => _save(),
-                      onSaveAndAgain:
-                          widget.bill == null ? () => _save(again: true) : null,
+                    // 属性胶囊行
+                    SizedBox(
+                      height: 44,
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            if (isTransfer) ...[
+                              _accountChip(
+                                '出 · ${selAcc?.name ?? '选择'}',
+                                selAcc?.emoji,
+                                () => _pickAccount(),
+                              ),
+                              _accountChip(
+                                '入 · ${selToAcc?.name ?? '选择'}',
+                                selToAcc?.emoji,
+                                () => _pickAccount(to: true),
+                              ),
+                            ] else ...[
+                              _accountChip(
+                                selAcc?.name ?? '选择账户',
+                                selAcc?.emoji,
+                                () => _pickAccount(),
+                                key: const ValueKey('entry-account'),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ActionChip(
+                                  key: const ValueKey('entry-currency'),
+                                  label: Text(
+                                    '${_currency.displayName} ${_currency.code}',
+                                  ),
+                                  onPressed: _pickCurrency,
+                                ),
+                              ),
+                              if (selAcc != null &&
+                                  selAcc.currency != _currency.code)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: ActionChip(
+                                    key: const ValueKey('entry-account-amount'),
+                                    label: Text(
+                                      '${_type == 1 ? '实收' : '实扣'} ${selAcc.currency} ${_actualConfirmed(selAcc, centsNow) ? formatMinorUnits(_actualAmount!, Currency.tryFromCode(selAcc.currency)!, grouping: false) : '待确认'}',
+                                    ),
+                                    onPressed: () => _pickActualAmount(selAcc!),
+                                  ),
+                                ),
+                              // AA 开关：仅新建账单或普通账单（可后补转换）显示；已是 AA 账单的编辑态隐藏
+                              if (paired &&
+                                  _type == 0 &&
+                                  widget.bill?.aaGroupId == null)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: FilterChip(
+                                    label: const Text('🤝 AA平分'),
+                                    selected: _aaOn,
+                                    onSelected: (v) {
+                                      if (v &&
+                                          (_currency != Currency.cny ||
+                                              selAcc?.currency != 'CNY')) {
+                                        _snack('AA 仅支持 CNY 交易和人民币账户');
+                                        return;
+                                      }
+                                      setState(() => _aaOn = v);
+                                    },
+                                  ),
+                                ),
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ActionChip(
+                                  label: Text(_dateChipLabel),
+                                  onPressed: isAaShareEdit ? null : _pickDate,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
                     ),
-                ],
+                    if (isAaShareEdit)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: 48,
+                          child: FilledButton(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: kPrimaryColor,
+                            ),
+                            onPressed: () => _save(),
+                            child: const Text('保存'),
+                          ),
+                        ),
+                      )
+                    else
+                      NumberPad(
+                        onKey: _onKey,
+                        onBackspace: _onBackspace,
+                        onClear: () => setState(() {
+                          _invalidateActual();
+                          _amount = '';
+                        }),
+                        onSave: () => _save(),
+                        onSaveAndAgain: widget.bill == null
+                            ? () => _save(again: true)
+                            : null,
+                      ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _accountChip(String label, String? emoji, VoidCallback onTap) {
+  Widget _accountChip(
+    String label,
+    String? emoji,
+    VoidCallback onTap, {
+    Key? key,
+  }) {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: ActionChip(
-        label: Text('${emoji ?? '💳'} $label',
-            style: const TextStyle(fontSize: 13)),
+        key: key,
+        label: Text(
+          '${emoji ?? '💳'} $label',
+          style: const TextStyle(fontSize: 13),
+        ),
         onPressed: onTap,
       ),
     );
@@ -1208,9 +1439,15 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           _snack('AA 账单类型不可变更');
           return;
         }
-        if (_type == t) return;
+        if (_type == t || _saving) return;
+        if (t == 2 && _currency != Currency.cny) {
+          _snack('多币种转账入口将在下一小点开放');
+          return;
+        }
         setState(() {
+          _invalidateActual();
           _type = t;
+          if (t != 0) _aaOn = false;
           _categoryId = null;
         });
       },
@@ -1219,8 +1456,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         decoration: BoxDecoration(
           border: Border(
             bottom: BorderSide(
-                width: 3,
-                color: selected ? kPrimaryColor : Colors.transparent),
+              width: 3,
+              color: selected ? kPrimaryColor : Colors.transparent,
+            ),
           ),
         ),
         child: Text(
@@ -1277,9 +1515,13 @@ class _AaLockedView extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('${cat?.emoji ?? '🤝'} ${CategoryHierarchy(categories).pathOf(bill.categoryId)}',
-                      style: const TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w600)),
+                  Text(
+                    '${cat?.emoji ?? '🤝'} ${CategoryHierarchy(categories).pathOf(bill.categoryId)}',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   const SizedBox(height: 8),
                   Text(
                     '¥ ${centsToText(bill.amount)}',
@@ -1288,9 +1530,7 @@ class _AaLockedView extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                       color: bill.type == 0
                           ? kExpenseColor
-                          : (bill.type == 1
-                              ? kIncomeColor
-                              : Colors.black87),
+                          : (bill.type == 1 ? kIncomeColor : Colors.black87),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -1319,340 +1559,97 @@ class _AaLockedView extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-              width: 52,
-              child: Text(k,
-                  style:
-                      const TextStyle(fontSize: 13, color: Colors.grey))),
-          Expanded(
-              child:
-                  Text(v, style: const TextStyle(fontSize: 13))),
+            width: 52,
+            child: Text(
+              k,
+              style: const TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+          ),
+          Expanded(child: Text(v, style: const TextStyle(fontSize: 13))),
         ],
       ),
     );
   }
 }
 
-/// 采用识别结果时带回的数据
-class _OcrAdoptResult {
-  const _OcrAdoptResult({
-    required this.amountText,
-    required this.noteText,
-    this.date,
-    this.accountId,
-    this.categoryId,
+Future<int?> _showActualAmountDialog(
+  BuildContext context, {
+  required Currency currency,
+  required bool income,
+  int? initial,
+}) => showDialog<int>(
+  context: context,
+  builder: (_) =>
+      _ActualAmountDialog(currency: currency, income: income, initial: initial),
+);
+
+class _ActualAmountDialog extends StatefulWidget {
+  const _ActualAmountDialog({
+    required this.currency,
+    required this.income,
+    this.initial,
   });
 
-  final String amountText;
-  final String noteText;
-  final DateTime? date;
-  final String? accountId;
-  final String? categoryId;
-}
-
-/// 识别结果面板（五要素全部可修改）：控制器由本 State 持有，随路由关闭正确释放
-class _OcrSheet extends StatefulWidget {
-  const _OcrSheet({
-    required this.candidates,
-    required this.initialAmount,
-    required this.initialNote,
-    this.initialDate,
-    this.initialAccountId,
-    this.initialCategoryId,
-    required this.accounts,
-    required this.categories,
-    required this.kind,
-    required this.previewLines,
-  });
-
-  final List<double> candidates;
-  final String initialAmount;
-  final String initialNote;
-  final DateTime? initialDate;
-  final String? initialAccountId;
-  final String? initialCategoryId;
-  final List<Account> accounts;
-  final List<Category> categories;
-  final int kind;
-  final List<String> previewLines;
+  final Currency currency;
+  final bool income;
+  final int? initial;
 
   @override
-  State<_OcrSheet> createState() => _OcrSheetState();
+  State<_ActualAmountDialog> createState() => _ActualAmountDialogState();
 }
 
-class _OcrSheetState extends State<_OcrSheet> {
-  late final TextEditingController _amountCtl =
-      TextEditingController(text: widget.initialAmount);
-  late final TextEditingController _noteCtl =
-      TextEditingController(text: widget.initialNote);
-  DateTime? _selDate;
-  String? _selAccId;
-  String? _selCatId;
-
-  @override
-  void initState() {
-    super.initState();
-    _selDate = widget.initialDate;
-    _selAccId = widget.initialAccountId;
-    _selCatId = widget.initialCategoryId;
-  }
+class _ActualAmountDialogState extends State<_ActualAmountDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initial == null
+        ? ''
+        : formatMinorUnits(widget.initial!, widget.currency, grouping: false),
+  );
+  String? _error;
 
   @override
   void dispose() {
-    _amountCtl.dispose();
-    _noteCtl.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
-  Account? get _accObj {
-    for (final a in widget.accounts) {
-      if (a.id == _selAccId) return a;
+  void _confirm() {
+    final units = parseMoneyToMinorUnits(_controller.text, widget.currency);
+    if (units == null || units <= 0) {
+      setState(
+        () => _error = widget.currency.minorUnitDigits == 0
+            ? '请输入大于零的整数金额'
+            : '请输入大于零且不超过两位小数的金额',
+      );
+      return;
     }
-    return null;
-  }
-
-  Category? get _catObj {
-    for (final c in widget.categories) {
-      if (c.id == _selCatId) return c;
-    }
-    return null;
-  }
-
-  String _fmtDate(DateTime d) {
-    String two(int v) => v.toString().padLeft(2, '0');
-    return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
-  }
-
-  void _adopt(BuildContext sctx) {
-    Navigator.pop(
-      sctx,
-      _OcrAdoptResult(
-        amountText: _amountCtl.text.trim(),
-        noteText: _noteCtl.text.trim(),
-        date: _selDate,
-        accountId: _selAccId,
-        categoryId: _selCatId,
-      ),
-    );
+    Navigator.pop(context, units);
   }
 
   @override
-  Widget build(BuildContext context) {
-    final acc = _accObj;
-    final cat = _catObj;
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(
-            16, 16, 16, 16 + MediaQuery.of(context).viewInsets.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('图片识别结果',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
-            // 金额：可直接输入，候选一键填入
-            Row(
-              children: [
-                const Text('¥ ',
-                    style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: kExpenseColor)),
-                Expanded(
-                  child: TextField(
-                    controller: _amountCtl,
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                    style: const TextStyle(
-                        fontSize: 24, fontWeight: FontWeight.bold),
-                    decoration: const InputDecoration(
-                      hintText: '输入金额',
-                      border: InputBorder.none,
-                      isDense: true,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            if (widget.candidates.length > 1)
-              Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                children: [
-                  for (final a in widget.candidates.take(8))
-                    ActionChip(
-                      label: Text(a.toStringAsFixed(2)),
-                      onPressed: () =>
-                          setState(() => _amountCtl.text = a.toStringAsFixed(2)),
-                    ),
-                ],
-              ),
-            const Divider(height: 20),
-            // 日期：点选修改（日期 + 时间，精确到分钟）
-            _row(
-              Icons.schedule,
-              '日期',
-              _selDate == null ? '使用当前时间' : _fmtDate(_selDate!),
-              () async {
-                final base = _selDate ?? DateTime.now();
-                final picked = await showDatePicker(
-                    context: context,
-                    initialDate: base,
-                    firstDate: DateTime(2000),
-                    lastDate: DateTime(2100));
-                if (picked == null || !mounted || !context.mounted) return;
-                final time = await showTimePicker(
-                  context: context,
-                  initialTime: TimeOfDay.fromDateTime(base),
-                );
-                if (!mounted) return;
-                setState(() => _selDate = time == null
-                    ? DateTime(picked.year, picked.month, picked.day,
-                        base.hour, base.minute)
-                    : DateTime(picked.year, picked.month, picked.day,
-                        time.hour, time.minute));
-              },
-            ),
-            // 备注：可编辑
-            TextField(
-              controller: _noteCtl,
-              style: const TextStyle(fontSize: 14),
-              decoration: const InputDecoration(
-                hintText: '备注（在哪里消费？）',
-                prefixIcon: Icon(Icons.edit_note, size: 20),
-                isDense: true,
-              ),
-            ),
-            // 账户：点选更换
-            _row(
-              Icons.account_balance_wallet,
-              '账户',
-              acc == null
-                  ? (widget.accounts.isEmpty ? noCnyAccountMessage : '保持当前选择')
-                  : '${acc.emoji} ${acc.name}',
-              () async {
-                final id = await showModalBottomSheet<String>(
-                  context: context,
-                  builder: (bctx) => SafeArea(
-                    child: ConstrainedBox(
-                      // 限高 + 内部滚动，避免账户多时 bottom overflowed
-                      constraints: BoxConstraints(
-                          maxHeight:
-                              MediaQuery.of(bctx).size.height * 0.6),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Padding(
-                              padding: EdgeInsets.all(12),
-                              child: Text('选择账户',
-                                  style: TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w600))),
-                          Flexible(
-                            child: ListView(
-                              shrinkWrap: true,
-                              padding: EdgeInsets.zero,
-                              children: [
-                                if (widget.accounts.isEmpty)
-                                  const Padding(
-                                    padding: EdgeInsets.all(16),
-                                    child: Text(noCnyAccountMessage),
-                                  ),
-                                for (final a in widget.accounts)
-                                  ListTile(
-                                    leading: Text(a.emoji,
-                                        style:
-                                            const TextStyle(fontSize: 22)),
-                                    title: Text(a.name),
-                                    onTap: () => Navigator.pop(bctx, a.id),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-                if (id != null) setState(() => _selAccId = id);
-              },
-            ),
-            // 分类：点选更换
-            _row(
-              Icons.category,
-              '分类',
-              cat == null ? '未选择' : '${cat.emoji} ${CategoryHierarchy(widget.categories).pathOf(cat.id)}',
-              () async {
-                final id = await showCategoryPicker(
-                  context: context,
-                  categories: widget.categories,
-                  kind: widget.kind,
-                  selectedId: _selCatId,
-                );
-                if (id != null && mounted) setState(() => _selCatId = id);
-              },
-            ),
-            const Divider(height: 20),
-            const Text('识别文本预览：',
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-            const SizedBox(height: 4),
-            Container(
-              width: double.infinity,
-              constraints: const BoxConstraints(maxHeight: 110),
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  for (final l in widget.previewLines.take(12))
-                    Text(l,
-                        style: const TextStyle(
-                            fontSize: 11, color: Colors.black45)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                style: FilledButton.styleFrom(backgroundColor: kPrimaryColor),
-                onPressed: () => _adopt(context),
-                child: const Text('采用并填入'),
-              ),
-            ),
-          ],
-        ),
+  Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
+    title: Text(widget.income ? '账户实际入账' : '账户实际扣款'),
+    content: TextField(
+      key: const ValueKey('account-amount-input'),
+      controller: _controller,
+      autofocus: true,
+      maxLength: 256,
+      keyboardType: TextInputType.numberWithOptions(
+        decimal: widget.currency.minorUnitDigits > 0,
       ),
-    );
-  }
-
-  Widget _row(IconData icon, String label, String value, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Row(
-          children: [
-            Icon(icon, size: 18, color: Colors.grey),
-            const SizedBox(width: 8),
-            Text(label,
-                style: const TextStyle(fontSize: 13, color: Colors.grey)),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(value,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w600)),
-            ),
-            const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
-          ],
-        ),
+      decoration: InputDecoration(
+        labelText: widget.currency.code,
+        helperText: '填写账户实际收付款额，不自动换算',
+        errorText: _error,
       ),
-    );
-  }
+      onSubmitted: (_) => _confirm(),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _confirm, child: const Text('确认')),
+    ],
+  );
 }

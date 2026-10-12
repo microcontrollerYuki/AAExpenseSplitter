@@ -203,6 +203,8 @@ void main() {
       await tap(tester, find.byTooltip('图片识别记账'));
       await tap(tester, find.text('从相册选择'));
       expect(find.text('图片识别结果'), findsOneWidget);
+      await tap(tester, key('ocr-currency'));
+      await tap(tester, find.widgetWithText(ListTile, '人民币 CNY'));
       final fields = find.descendant(
         of: find.byType(BottomSheet),
         matching: find.byType(TextField),

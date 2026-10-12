@@ -1,5 +1,35 @@
 import '../data/app_database.dart';
 import '../data/presets.dart';
+import 'currency.dart';
+
+const noEntryAccountMessage = '暂无可用账户，请先在「账本」中创建';
+const staleEntryAccountMessage = '所选账户已变化，请重新选择账户';
+
+/// 普通收支可选各支持币种钱包；AA 挂账只用于人民币交易。
+List<Account> bookkeepingEntryAccounts(
+  Iterable<Account> accounts,
+  Currency currency, {
+  bool cnyOnly = false,
+}) => accounts.where((account) {
+  if (Currency.tryFromCode(account.currency) == null) return false;
+  if (cnyOnly && account.currency != 'CNY') return false;
+  if (account.type == 4 || account.id == kAaCreditAccountId) {
+    return account.id == kAaCreditAccountId && currency == Currency.cny;
+  }
+  return true;
+}).toList();
+
+String? bookkeepingAccountId(
+  List<Account> accounts,
+  String? selectedId,
+  Currency currency,
+) {
+  if (selectedId != null) return entryAccountId(accounts, selectedId);
+  for (final account in accounts) {
+    if (account.currency == currency.code) return account.id;
+  }
+  return entryAccountId(accounts, null);
+}
 
 const noCnyAccountMessage = '暂无可用人民币账户，请先在「账本」中创建';
 const staleCnyAccountMessage = '所选账户已变化，请重新选择人民币账户';

@@ -10,7 +10,20 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 
 import '../helpers/test_support.dart';
 
+Future<void> _reveal(WidgetTester tester, Finder finder) async {
+  for (var attempt = 0; finder.evaluate().isEmpty && attempt < 8; attempt++) {
+    final lists = find.byType(ListView);
+    expect(lists, findsWidgets);
+    await tester.drag(lists.last, const Offset(0, -180));
+    await settleProviders(tester);
+  }
+  expect(finder, findsOneWidget);
+  await tester.ensureVisible(finder);
+  await settleProviders(tester);
+}
+
 Future<void> _tap(WidgetTester tester, Finder finder) async {
+  await _reveal(tester, finder);
   await tester.runAsync(() async {
     await tester.tap(finder);
     await Future<void>.delayed(const Duration(milliseconds: 30));
@@ -85,11 +98,19 @@ Future<void> _enterFive(WidgetTester tester) => _tap(
   find.descendant(of: find.byType(NumberPad), matching: find.text('5')),
 );
 
-void _expectRealCnyChoices() {
-  expect(find.widgetWithText(ListTile, '现金'), findsOneWidget);
-  expect(find.widgetWithText(ListTile, '银行卡'), findsOneWidget);
-  expect(find.widgetWithText(ListTile, '美元微信'), findsNothing);
-  expect(find.widgetWithText(ListTile, 'AA挂账'), findsNothing);
+List<String> _listedAccounts(WidgetTester tester) =>
+    (tester.widget<ListView>(find.byType(ListView).last).childrenDelegate
+            as SliverChildListDelegate)
+        .children
+        .whereType<ListTile>()
+        .map((tile) => (tile.title! as Text).data!)
+        .toList();
+
+void _expectRealCnyChoices(WidgetTester tester) {
+  final names = _listedAccounts(tester);
+  expect(names, containsAll(['现金', '银行卡']));
+  expect(names, isNot(contains('美元微信')));
+  expect(names, isNot(contains('AA挂账')));
 }
 
 Future<void> _seedAaGroup(TestAppDatabase db) => db.upsertAaGroup(
@@ -112,13 +133,15 @@ Future<Map<String, Object?>> _databaseSnapshot(AppDatabase db) async => {
     for (final row in await db.select(db.bills).get()) row.id: row.toJson(),
   },
   'categories': {
-    for (final row in await db.select(db.categories).get()) row.id: row.toJson(),
+    for (final row in await db.select(db.categories).get())
+      row.id: row.toJson(),
   },
   'groups': {
     for (final row in await db.select(db.aaGroups).get()) row.id: row.toJson(),
   },
   'settlements': {
-    for (final row in await db.select(db.settlements).get()) row.id: row.toJson(),
+    for (final row in await db.select(db.settlements).get())
+      row.id: row.toJson(),
   },
   'meta': {
     for (final row in await db.select(db.metaEntries).get()) row.key: row.value,
@@ -127,7 +150,7 @@ Future<Map<String, Object?>> _databaseSnapshot(AppDatabase db) async => {
 
 void main() {
   for (final type in [0, 1]) {
-    testWidgets('CNY ${type == 0 ? '支出' : '收入'}默认跳过首位USD，选择器保留人民币AA挂账用途', (
+    testWidgets('CNY ${type == 0 ? '支出' : '收入'}默认跳过首位USD，选择器开放外币并保留人民币AA挂账用途', (
       tester,
     ) async {
       final db = await _seed(paired: true);
@@ -136,8 +159,7 @@ void main() {
       expect(_chip('💵 现金'), findsOneWidget);
       expect(find.textContaining('美元微信'), findsNothing);
       await _tap(tester, _chip('💵 现金'));
-      expect(find.widgetWithText(ListTile, '美元微信'), findsNothing);
-      expect(find.widgetWithText(ListTile, 'AA挂账'), findsOneWidget);
+      expect(_listedAccounts(tester), containsAll(['美元微信', 'AA挂账']));
       await _tap(tester, find.widgetWithText(ListTile, '银行卡'));
       await _enterFive(tester);
       await _tap(tester, find.text('保存'));
@@ -160,10 +182,10 @@ void main() {
     expect(_chip('💵 出 · 现金'), findsOneWidget);
     expect(_chip('💚 入 · 微信'), findsOneWidget);
     await _tap(tester, _chip('💵 出 · 现金'));
-    _expectRealCnyChoices();
+    _expectRealCnyChoices(tester);
     await _tap(tester, find.widgetWithText(ListTile, '现金'));
     await _tap(tester, _chip('💚 入 · 微信'));
-    _expectRealCnyChoices();
+    _expectRealCnyChoices(tester);
     await _tap(tester, find.widgetWithText(ListTile, '银行卡'));
     await _enterFive(tester);
     await _tap(tester, find.text('保存'));
@@ -179,7 +201,7 @@ void main() {
     await disposePage(tester, db);
   }, timeout: const Timeout(Duration(seconds: 30)));
 
-  for (final type in [0, 1, 2]) {
+  for (final type in [2]) {
     testWidgets('仅有USD时旧CNY类型$type展示账户空态并拒绝保存', (tester) async {
       final db = await _seed(keepCny: false);
       await _openEditor(tester, db);
@@ -222,7 +244,7 @@ void main() {
     await disposePage(tester, db);
   }, timeout: const Timeout(Duration(seconds: 30)));
 
-  testWidgets('已有CNY账单编辑可换真实人民币账户，USD不出现在列表', (tester) async {
+  testWidgets('已有CNY账单编辑可换真实人民币账户，USD也可显式选择', (tester) async {
     final db = await _seed();
     await db.upsertBill(
       id: 'old',
@@ -235,7 +257,7 @@ void main() {
     final before = (await db.getAllBills()).single;
     await _openEditor(tester, db, bill: before);
     await _tap(tester, _chip('💵 现金'));
-    expect(find.widgetWithText(ListTile, '美元微信'), findsNothing);
+    expect(find.widgetWithText(ListTile, '美元微信'), findsOneWidget);
     await _tap(tester, find.widgetWithText(ListTile, '微信'));
     await tester.enterText(find.byType(TextField), '保留人民币金额');
     tester.testTextInput.hide();
@@ -280,10 +302,20 @@ void main() {
 
       expect(await db.getAllBills(), isEmpty);
       expect(find.byType(EditBillPage), findsOneWidget);
-      expect(find.text('所选账户已变化，请重新选择人民币账户'), findsOneWidget);
-      await _tap(tester, _chip('💳 选择账户'));
-      expect(find.widgetWithText(ListTile, '美元微信'), findsNothing);
-      expect(find.widgetWithText(ListTile, '银行卡'), findsNothing);
+      if (change == '删除') {
+        expect(find.text(staleEntryAccountMessage), findsOneWidget);
+      } else {
+        expect(
+          find.byKey(const ValueKey('entry-account-amount')),
+          findsOneWidget,
+        );
+      }
+      await _tap(tester, find.byKey(const ValueKey('entry-account')));
+      expect(_listedAccounts(tester), contains('美元微信'));
+      expect(
+        _listedAccounts(tester),
+        change == '删除' ? isNot(contains('银行卡')) : contains('银行卡'),
+      );
       await _tap(tester, find.widgetWithText(ListTile, '微信'));
       await _tap(tester, find.text('保存'));
 
@@ -319,7 +351,7 @@ void main() {
     expect((await db.getAllBills()).single, before);
     expect(await _databaseSnapshot(db), databaseBefore);
     expect(find.byType(EditBillPage), findsOneWidget);
-    expect(find.text('所选账户已变化，请重新选择人民币账户'), findsOneWidget);
+    expect(find.text(staleEntryAccountMessage), findsOneWidget);
     await tester.pump(const Duration(seconds: 3));
     await settleProviders(tester);
     await _tap(tester, _chip('💳 选择账户'));
@@ -335,7 +367,7 @@ void main() {
   }, timeout: const Timeout(Duration(seconds: 30)));
 
   for (final currency in ['USD', 'CNY']) {
-    testWidgets('涉及USD账户的$currency原账在旧CNY编辑页只读，双金额和账户不变', (tester) async {
+    testWidgets('涉及USD账户的$currency普通原账现在可编辑，未改钱时保留双金额', (tester) async {
       final db = await _seed();
       await db.upsertBill(
         id: 'foreign',
@@ -350,12 +382,21 @@ void main() {
       final before = (await db.getAllBills()).single;
       await _openEditor(tester, db, bill: before);
 
-      expect(find.text('暂不能编辑'), findsOneWidget);
-      expect(find.text('该账单涉及外币，币种记账功能开放后可编辑。现有金额和账户将保留。'), findsOneWidget);
-      expect(find.byType(NumberPad), findsNothing);
-      expect(find.text('保存'), findsNothing);
-      expect(find.byTooltip('图片识别记账'), findsNothing);
-      expect((await db.getAllBills()).single, before);
+      expect(find.text('暂不能编辑'), findsNothing);
+      expect(find.byType(NumberPad), findsOneWidget);
+      await tester.enterText(find.byType(TextField), '外币本地新备注');
+      tester.testTextInput.hide();
+      await _tap(tester, find.text('保存'));
+      final after = (await db.getAllBills()).single;
+      expect(after.note, '外币本地新备注');
+      expect(
+        after.toJson()
+          ..remove('updatedAt')
+          ..remove('note'),
+        before.toJson()
+          ..remove('updatedAt')
+          ..remove('note'),
+      );
       expect(tester.takeException(), isNull);
       await disposePage(tester, db);
     }, timeout: const Timeout(Duration(seconds: 30)));
@@ -375,7 +416,7 @@ void main() {
     final before = (await db.getAllBills()).single;
     await _openEditor(tester, db, bill: before);
     await _tap(tester, _chip('💵 现金'));
-    _expectRealCnyChoices();
+    _expectRealCnyChoices(tester);
     await _tap(tester, find.widgetWithText(ListTile, '微信'));
     await tester.enterText(find.byType(TextField), '本机新备注');
     tester.testTextInput.hide();
@@ -434,7 +475,9 @@ void main() {
   }, timeout: const Timeout(Duration(seconds: 30)));
 
   for (final keepCny in [true, false]) {
-    testWidgets('OCR猜测与结果面板过滤首位同名USD，人民币账户存在=$keepCny', (tester) async {
+    testWidgets('OCR人民币候选可匹配明确美元账户线索，仍由用户确认实际扣款，人民币账户存在=$keepCny', (
+      tester,
+    ) async {
       final previousPicker = ImagePickerPlatform.instance;
       ImagePickerPlatform.instance = FakeImagePickerPlatform('/synthetic.jpg');
       mockMlKitTextRecognition([
@@ -449,16 +492,16 @@ void main() {
       await _tap(tester, find.byTooltip('图片识别记账'));
       await _tap(tester, find.text('从相册选择'));
       expect(find.text('图片识别结果'), findsOneWidget);
-      if (keepCny) expect(find.text('💚 微信'), findsOneWidget);
-      if (!keepCny) expect(find.text(noCnyAccountMessage), findsOneWidget);
+      expect(find.textContaining('美元微信 · USD'), findsOneWidget);
+      // ￥同样可能表示日元，旧图片须先手动确认 CNY 才能采用。
+      await _tap(tester, find.byKey(const ValueKey('ocr-currency')));
+      await _tap(tester, find.widgetWithText(ListTile, '人民币 CNY'));
       await _tap(tester, find.text('账户'));
-      expect(find.widgetWithText(ListTile, '美元微信'), findsNothing);
+      expect(find.widgetWithText(ListTile, '美元微信'), findsOneWidget);
       if (keepCny) {
         await _tap(tester, find.widgetWithText(ListTile, '银行卡'));
       } else {
-        expect(find.byType(ListTile), findsNothing);
-        Navigator.of(tester.element(find.text('选择账户'))).pop();
-        await settleProviders(tester);
+        await _tap(tester, find.widgetWithText(ListTile, '美元微信'));
       }
       await _tap(tester, find.text('采用并填入'));
       // 先读完采用提示；SnackBar队列不会用保存错误覆盖尚在展示的提示。
@@ -474,7 +517,10 @@ void main() {
         expect(bill.accountAmount, 1234);
       } else {
         expect(await db.getAllBills(), isEmpty);
-        expect(find.text(noCnyAccountMessage), findsOneWidget);
+        expect(
+          find.byKey(const ValueKey('entry-account-amount')),
+          findsOneWidget,
+        );
         expect(find.byType(EditBillPage), findsOneWidget);
       }
       expect(tester.takeException(), isNull);

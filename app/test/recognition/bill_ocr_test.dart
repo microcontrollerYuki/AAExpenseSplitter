@@ -17,24 +17,23 @@ void main() {
 
     test('¥/元 标记金额提取并降序去重', () {
       final r = parseBillLines(['合计 ¥88.80', '优惠 5元', '现金支付 ¥25']);
-      // {88.80, 5, 25} 降序
-      expect(r.amounts, [88.8, 25, 5]);
+      expect(r.amounts.map((v) => v.amountText), ['88.80', '25.00', '5.00']);
+      expect(r.amounts.every((v) => v.requiresCurrencyConfirmation), isTrue);
     });
 
     test('纯金额行（大字金额）被提取，全角负号规范化', () {
       final r = parseBillLines(['−6.33', '88.80', '¥99.99']);
-      expect(r.amounts, [99.99, 88.8, 6.33]);
+      expect(r.amounts.map((v) => v.amountText), ['99.99', '88.80', '6.33']);
     });
 
-    test('异常金额被过滤：0 与百万以上', () {
-      final r = parseBillLines(['0.00', '¥0', '¥9999999.99', '1234567.00']);
-      // '1234567.00' 7位整数+2位小数匹配纯金额行但 >=1000000 被滤
+    test('零及超出存储范围金额被过滤', () {
+      final r = parseBillLines(['0.00', '¥0', '¥92233720368547758.08']);
       expect(r.amounts, isEmpty);
     });
 
     test('同一金额来自不同来源只保留一个', () {
       final r = parseBillLines(['88.80', '合计 ¥88.80']);
-      expect(r.amounts, [88.8]);
+      expect(r.amounts, [const OcrMoneyCandidate(amountText: '88.80')]);
     });
 
     test('日期时间解析：横杠+时分秒', () {
@@ -127,7 +126,7 @@ void main() {
       ]);
       expect(r.source, 'wechat');
       expect(r.merchantGuess, '拼多多');
-      expect(r.amounts, [6.33]);
+      expect(r.amounts, [const OcrMoneyCandidate(amountText: '6.33')]);
       expect(r.accountHintLine, '付款方式 零钱');
     });
 
@@ -147,16 +146,11 @@ void main() {
     test('大字金额在最后一行时无下一行可锚定', () {
       final r = parseBillLines(['支付成功', '财付通', '-6.33']);
       expect(r.source, 'wechat');
-      expect(r.amounts, [6.33]);
+      expect(r.amounts, [const OcrMoneyCandidate(amountText: '6.33')]);
     });
 
     test('锚点行含界面词被拒绝时保留通用商户', () {
-      final r = parseBillLines([
-        '支付成功',
-        '收单机构 财付通',
-        '-6.33',
-        '转账',
-      ]);
+      final r = parseBillLines(['支付成功', '收单机构 财付通', '-6.33', '转账']);
       expect(r.source, 'wechat');
       expect(r.merchantGuess, isNot('转账'));
     });
@@ -172,7 +166,7 @@ void main() {
       final r = parseBillLines(['账单详情', '全氏羊奶', '全氏羊奶', '25.00 元']);
       expect(r.source, 'alipay');
       expect(r.merchantGuess, '全氏羊奶');
-      expect(r.amounts, [25.0]);
+      expect(r.amounts, [const OcrMoneyCandidate(amountText: '25.00')]);
     });
 
     test('查看扣款顺序也命中', () {

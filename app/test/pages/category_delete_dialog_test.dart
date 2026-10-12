@@ -565,7 +565,7 @@ void main() {
         destination: const CategoryDeleteDestination.uncategorized(),
         confirmWholeGroup: true,
       );
-      final bill = (await db.getAllBills()).single;
+      var bill = (await db.getAllBills()).single;
       await pumpPage(
         tester,
         Builder(
@@ -587,6 +587,8 @@ void main() {
       expect(saved.categoryId, isNull);
       expect(saved.note, '只改备注');
       expect(saved.amount, bill.amount);
+      // 再次打开使用已保存快照，沿用真实详情页的刷新行为。
+      bill = saved;
       await click(tester, find.text('编辑'));
       await click(tester, deleteKey('category-root-target'));
       await commitClick(tester, find.text('保存'));

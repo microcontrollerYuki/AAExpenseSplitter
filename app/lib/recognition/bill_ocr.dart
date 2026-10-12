@@ -1,5 +1,27 @@
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
+import '../utils/currency.dart';
+import '../utils/money.dart';
+
+/// 精确金额及其局部币种线索。没有明确币种时交由用户确认，不根据平台猜测。
+class OcrMoneyCandidate {
+  const OcrMoneyCandidate({required this.amountText, this.currency});
+
+  final String amountText;
+  final Currency? currency;
+
+  bool get requiresCurrencyConfirmation => currency == null;
+
+  @override
+  bool operator ==(Object other) =>
+      other is OcrMoneyCandidate &&
+      other.amountText == amountText &&
+      other.currency == currency;
+
+  @override
+  int get hashCode => Object.hash(amountText, currency);
+}
+
 /// 账单图片识别结果（本地中文 OCR + 规则解析）
 class BillOcrResult {
   const BillOcrResult({
@@ -15,8 +37,8 @@ class BillOcrResult {
   /// 识别出的全部文本行
   final List<String> lines;
 
-  /// 金额候选（降序去重，已过滤异常值）
-  final List<double> amounts;
+  /// 精确金额候选（按数值降序，同币种去重；币种不明时须由用户确认）
+  final List<OcrMoneyCandidate> amounts;
 
   /// 商户/地点猜测
   final String merchantGuess;
@@ -125,9 +147,7 @@ class _AlipayBillTemplate implements BillTemplate {
   @override
   bool matches(List<String> lines) {
     for (final l in lines) {
-      if (l.contains('账单详情') ||
-          l.contains('查看扣款顺序') ||
-          l.contains('收款方全称')) {
+      if (l.contains('账单详情') || l.contains('查看扣款顺序') || l.contains('收款方全称')) {
         return true;
       }
     }
@@ -158,7 +178,8 @@ String _normalizeAmountLine(String line) => line
     .replaceAll('–', '-')
     .replaceAll('—', '-');
 
-const _merchantKw = r'20\d{2}|\d{1,2}:\d{2}|订单|单号|编号|时间|电话|地址|合计|小票|欢迎|'
+const _merchantKw =
+    r'20\d{2}|\d{1,2}:\d{2}|订单|单号|编号|时间|电话|地址|合计|小票|欢迎|'
     r'微信|支付宝|财付通|收款|付款|总额|金额|¥|￥|积分|账单|详情|全部|更多|'
     r'解读|客服|管理|返回|交易|成功|失败|扣费|储蓄卡|借记卡|银行卡|支付|'
     r'小程序|喜欢|状态|服务|机构|商品|余额|零钱|红包|转账|充值|提现';
@@ -181,8 +202,11 @@ String _findRoute(List<String> lines) {
   return '';
 }
 
-BillOcrResult _rebuild(BillOcrResult base,
-    {String? merchantOverride, String? source}) {
+BillOcrResult _rebuild(
+  BillOcrResult base, {
+  String? merchantOverride,
+  String? source,
+}) {
   final merchant = merchantOverride ?? base.merchantGuess;
   final route = _findRoute(base.lines);
   final note = [
@@ -204,33 +228,135 @@ BillOcrResult _rebuild(BillOcrResult base,
 // 通用规则解析（兜底 + 各字段基础提取）
 // ---------------------------------------------------------------------------
 
-/// 规则解析。金额优先级：纯金额行（如「-2.00」，须带小数点或负号，排除电量/编号）
-/// > ¥/元 标记 > 无标记小数（剔除日期/电话/订单行）。
-BillOcrResult _parseGeneric(List<String> lines) {
-  final marked = <double>{};
-  final bare = <double>{};
-  for (final line in lines) {
-    for (final m in RegExp(r'[¥￥]\s*(\d+(?:\.\d{1,2})?)').allMatches(line)) {
-      marked.add(double.parse(m.group(1)!));
+const _maxMoneyLines = 2000;
+const _maxMoneyLineLength = 1024;
+const _maxMoneyCandidates = 128;
+const _moneyToken = r'[+-]?(?:[0-9][0-9.,]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?';
+const _explicitCurrencyToken =
+    r'HK\$|US\$|CNY|RMB|USD|HKD|EUR|JPY|GBP|人民币|'
+    r'美元|美金|港币|港元|欧元|日元|日币|英镑';
+const _currencyToken =
+    '(?:$_explicitCurrencyToken)'
+    r'(?:\s*[¥￥$€£])?|[¥￥$€£]|元';
+final _explicitMarker = RegExp(
+  '^($_explicitCurrencyToken)(?:\\s*([¥￥\$€£]))?\$',
+  caseSensitive: false,
+);
+final _markedMoney = RegExp(
+  '($_currencyToken)\\s*($_moneyToken)|'
+  '($_moneyToken)\\s*($_currencyToken)',
+  caseSensitive: false,
+);
+final _bareMoney = RegExp('^($_moneyToken)\$');
+final _amountNoise = RegExp(r'订单|单号|编号|流水号|交易号|电话|手机号|日期|时间');
+final _overlongMoneyToken = RegExp(r'[0-9.,]{64}');
+
+Currency? _currencyForMarker(String marker) {
+  if (marker == '€') return Currency.eur;
+  if (marker == '£') return Currency.gbp;
+  final match = _explicitMarker.firstMatch(marker);
+  if (match == null) return null;
+  final currency = switch (match.group(1)!.toUpperCase()) {
+    'CNY' || 'RMB' || '人民币' => Currency.cny,
+    'USD' || r'US$' || '美元' || '美金' => Currency.usd,
+    'HKD' || r'HK$' || '港币' || '港元' => Currency.hkd,
+    'EUR' || '欧元' => Currency.eur,
+    'JPY' || '日元' || '日币' => Currency.jpy,
+    'GBP' || '英镑' => Currency.gbp,
+    _ => null,
+  };
+  final symbol = match.group(2);
+  if (symbol == null) return currency;
+  // 仅同一金额前的兼容组合提供明确线索；USD € 等矛盾标记留待用户确认。
+  final compatible = switch (currency) {
+    Currency.cny || Currency.jpy => symbol == '¥' || symbol == '￥',
+    Currency.usd || Currency.hkd => symbol == r'$',
+    Currency.eur => symbol == '€',
+    Currency.gbp => symbol == '£',
+    null => false,
+  };
+  return compatible ? currency : null;
+}
+
+bool _hasMoneyBoundary(String line, int start, int end) {
+  // 不把订单中的字母数字、额外小数或分组逗号截成另一个合法金额。
+  final invalidNeighbor = RegExp(r'[A-Za-z0-9.,]');
+  return (start == 0 || !invalidNeighbor.hasMatch(line[start - 1])) &&
+      (end == line.length || !invalidNeighbor.hasMatch(line[end]));
+}
+
+List<OcrMoneyCandidate> _parseMoneyCandidates(List<String> lines) {
+  final candidates = <OcrMoneyCandidate>{};
+
+  void add(String numericText, Currency? currency) {
+    // 未明确币种的候选最多允许两位小数，只作精确文本规范化；不会据此认定人民币。
+    final precision = currency ?? Currency.cny;
+    final units = parseMoneyToMinorUnits(numericText, precision);
+    if (units == null || units == 0) return;
+    // 图片中的负号常表示扣款，收支方向仍由记账表单确认。
+    // 最小 int64 的绝对值无法作为正金额保存。
+    final magnitude = BigInt.from(units).abs();
+    if (magnitude > BigInt.parse('9223372036854775807')) return;
+    candidates.add(
+      OcrMoneyCandidate(
+        amountText: formatMinorUnits(
+          magnitude.toInt(),
+          precision,
+          grouping: false,
+        ),
+        currency: currency,
+      ),
+    );
+  }
+
+  for (final original in lines.take(_maxMoneyLines)) {
+    if (candidates.length >= _maxMoneyCandidates) break;
+    // 过长行整行跳过，不能截断后将小数前两位误当成金额。
+    if (original.length > _maxMoneyLineLength ||
+        _overlongMoneyToken.hasMatch(original) ||
+        _amountNoise.hasMatch(original)) {
+      continue;
     }
-    for (final m in RegExp(r'(\d+(?:\.\d{1,2})?)\s*元').allMatches(line)) {
-      marked.add(double.parse(m.group(1)!));
+    final line = original
+        .replaceAll('−', '-')
+        .replaceAll('–', '-')
+        .replaceAll('—', '-');
+    var hasMarker = false;
+    for (final match in _markedMoney.allMatches(line)) {
+      hasMarker = true;
+      if (!_hasMoneyBoundary(line, match.start, match.end)) continue;
+      final marker = match.group(1) ?? match.group(4)!;
+      final numeric = match.group(2) ?? match.group(3)!;
+      add(numeric, _currencyForMarker(marker));
+      if (candidates.length >= _maxMoneyCandidates) break;
     }
-    // 纯金额行（支付截图的大字金额，如「-2.00」「88.80」）：规范化全角负号后整行匹配
-    final t = _normalizeAmountLine(line);
-    if (RegExp(r'^[¥]?-?\d{1,7}\.\d{1,2}$').hasMatch(t)) {
-      final v = double.parse(t.replaceAll('¥', '').replaceAll('-', ''));
-      if (v > 0 && v < 1000000) bare.add(v);
+    // 有币种标记的非法金额不能再退回无币种候选（例如 JPY 1.00）。
+    if (!hasMarker) {
+      final numeric = line.trim();
+      if (_bareMoney.hasMatch(numeric)) add(numeric, null);
     }
   }
+
+  BigInt comparisonValue(OcrMoneyCandidate candidate) => BigInt.parse(
+    candidate.currency == Currency.jpy
+        ? '${candidate.amountText}00'
+        : candidate.amountText.replaceAll('.', ''),
+  );
+  return candidates.toList()
+    ..sort((a, b) => comparisonValue(b).compareTo(comparisonValue(a)));
+}
+
+/// 规则解析：明确币种与金额只在局部关联；含糊标记和裸金额等待用户确认。
+BillOcrResult _parseGeneric(List<String> lines) {
+  final amounts = _parseMoneyCandidates(lines);
 
   // 日期时间（优先「支付时间」行）：2026-10-04 10:43:41 / 2026年10月04日 21:18:37
   DateTime? date;
   for (final line in lines) {
     final m = RegExp(
-            r'(20\d{2})[-/年.](\d{1,2})[-/月.](\d{1,2})[日号]?\s*'
-            r'(?:(\d{1,2}):(\d{2})(?::(\d{2}))?)?')
-        .firstMatch(line);
+      r'(20\d{2})[-/年.](\d{1,2})[-/月.](\d{1,2})[日号]?\s*'
+      r'(?:(\d{1,2}):(\d{2})(?::(\d{2}))?)?',
+    ).firstMatch(line);
     if (m != null) {
       date = DateTime(
         int.parse(m.group(1)!),
@@ -260,6 +386,7 @@ BillOcrResult _parseGeneric(List<String> lines) {
   for (final line in lines) {
     if (line.length < 2 || line.length > 20) continue;
     if (RegExp(_merchantKw).hasMatch(line)) continue;
+    if (_markedMoney.hasMatch(line)) continue;
     if (!RegExp(r'[\u4e00-\u9fa5]').hasMatch(line)) continue;
     cands.add(line);
   }
@@ -276,11 +403,6 @@ BillOcrResult _parseGeneric(List<String> lines) {
       }
     }
   }
-
-  final amounts = <double>{...bare, ...marked}
-      .where((v) => v > 0 && v < 1000000)
-      .toList()
-    ..sort((a, b) => b.compareTo(a));
 
   final route = _findRoute(lines);
   final note = [
