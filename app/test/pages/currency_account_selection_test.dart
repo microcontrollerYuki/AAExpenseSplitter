@@ -175,17 +175,19 @@ void main() {
     }, timeout: const Timeout(Duration(seconds: 30)));
   }
 
-  testWidgets('旧CNY转账的默认双方与两个选择器仅使用真实人民币钱包', (tester) async {
+  testWidgets('旧CNY转账默认同币双方，两个选择器开放外币真实钱包并排除AA', (tester) async {
     final db = await _seed(paired: true);
     await _openEditor(tester, db);
     await _tap(tester, find.text('转账'));
     expect(_chip('💵 出 · 现金'), findsOneWidget);
     expect(_chip('💚 入 · 微信'), findsOneWidget);
     await _tap(tester, _chip('💵 出 · 现金'));
-    _expectRealCnyChoices(tester);
+    expect(_listedAccounts(tester), containsAll(['现金', '银行卡', '美元微信']));
+    expect(_listedAccounts(tester), isNot(contains('AA挂账')));
     await _tap(tester, find.widgetWithText(ListTile, '现金'));
     await _tap(tester, _chip('💚 入 · 微信'));
-    _expectRealCnyChoices(tester);
+    expect(_listedAccounts(tester), containsAll(['现金', '银行卡', '美元微信']));
+    expect(_listedAccounts(tester), isNot(contains('AA挂账')));
     await _tap(tester, find.widgetWithText(ListTile, '银行卡'));
     await _enterFive(tester);
     await _tap(tester, find.text('保存'));
@@ -202,19 +204,18 @@ void main() {
   }, timeout: const Timeout(Duration(seconds: 30)));
 
   for (final type in [2]) {
-    testWidgets('仅有USD时旧CNY类型$type展示账户空态并拒绝保存', (tester) async {
+    testWidgets('仅一个USD账户可作为转出，但因缺少不同转入账户拒绝保存', (tester) async {
       final db = await _seed(keepCny: false);
       await _openEditor(tester, db);
       if (type != 0) await _tap(tester, find.text(type == 1 ? '收入' : '转账'));
-      await _tap(tester, _chip(type == 2 ? '💳 出 · 选择' : '💳 选择账户'));
-      expect(find.text(noCnyAccountMessage), findsOneWidget);
-      expect(find.byType(ListTile), findsNothing);
+      await _tap(tester, find.byKey(const ValueKey('entry-account')));
+      expect(_listedAccounts(tester), ['美元微信']);
       Navigator.of(tester.element(find.text('选择账户'))).pop();
       await settleProviders(tester);
       await _enterFive(tester);
       await _tap(tester, find.text('保存'));
 
-      expect(find.text(noCnyAccountMessage), findsOneWidget);
+      expect(find.text('转账需至少两个不同的真实账户'), findsOneWidget);
       expect(find.byType(EditBillPage), findsOneWidget);
       expect(await db.getAllBills(), isEmpty);
       expect(tester.takeException(), isNull);
@@ -222,7 +223,7 @@ void main() {
     }, timeout: const Timeout(Duration(seconds: 30)));
   }
 
-  testWidgets('仅一个真实CNY加USD时，转账不会把外币当作默认转入账户', (tester) async {
+  testWidgets('仅一个真实CNY加USD时可默认跨币目标，但必须确认到账额', (tester) async {
     final db = await _seed(paired: true);
     for (final account in await db.getAllAccounts()) {
       if (account.id != 'usd' &&
@@ -234,11 +235,11 @@ void main() {
     await _openEditor(tester, db);
     await _tap(tester, find.text('转账'));
     expect(_chip('💵 出 · 现金'), findsOneWidget);
-    expect(_chip('💳 入 · 选择'), findsOneWidget);
+    expect(_chip('💲 入 · 美元微信'), findsOneWidget);
     await _enterFive(tester);
     await _tap(tester, find.text('保存'));
 
-    expect(find.text('转账需至少两个不同的人民币账户'), findsOneWidget);
+    expect(find.text('请确认转入账户实际入账金额'), findsOneWidget);
     expect(await db.getAllBills(), isEmpty);
     expect(tester.takeException(), isNull);
     await disposePage(tester, db);

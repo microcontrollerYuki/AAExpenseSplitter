@@ -47,15 +47,17 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   int? _actualAmount;
   String? _actualSignature;
   bool _originalActual = false;
+  int? _receivedAmount;
+  String? _receivedSignature;
+  bool _originalReceived = false;
+  bool _requireReceivedConfirmation = false;
 
   bool get _aaRestricted => _aaOn || widget.bill?.aaGroupId != null;
 
-  List<Account> _entryAccounts(Iterable<Account> accounts) =>
-      _type == 2 || _isSettlementEdit
-      ? cnyEntryAccounts(
-          accounts,
-          includeAaCredit: _type != 2 && !_isSettlementEdit,
-        )
+  List<Account> _entryAccounts(Iterable<Account> accounts) => _type == 2
+      ? transferEntryAccounts(accounts)
+      : _isSettlementEdit
+      ? cnyEntryAccounts(accounts, includeAaCredit: false)
       : bookkeepingEntryAccounts(accounts, _currency, cnyOnly: _aaRestricted);
 
   String? _effectiveAccountId(List<Account> accounts) => _type == 2
@@ -66,6 +68,109 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     _actualAmount = null;
     _actualSignature = null;
     _originalActual = false;
+    _receivedAmount = null;
+    _receivedSignature = null;
+    _originalReceived = false;
+  }
+
+  String _transferSignature(Account source, Account target, int units) =>
+      '$_type|${source.id}|${source.currency}|${target.id}|${target.currency}|$units';
+
+  bool _receivedConfirmed(Account source, Account target, int units) {
+    final b = widget.bill;
+    return _receivedAmount != null &&
+        (_receivedSignature == _transferSignature(source, target, units) ||
+            (_originalReceived &&
+                b != null &&
+                b.type == 2 &&
+                _type == 2 &&
+                b.accountId == source.id &&
+                b.toAccountId == target.id &&
+                b.currency == source.currency &&
+                b.amount == units &&
+                b.accountAmount == units));
+  }
+
+  bool _unsafeTransferHistory(Bill? b, List<Account> allAccounts) {
+    if (b == null || b.type != 2) return false;
+    final originalSource = allAccounts
+        .where((a) => a.id == b.accountId)
+        .firstOrNull;
+    final originalTarget = allAccounts
+        .where((a) => a.id == b.toAccountId)
+        .firstOrNull;
+    return (originalSource == null ||
+        originalTarget == null ||
+        originalSource.id == originalTarget.id ||
+        originalSource.type == 4 ||
+        originalTarget.type == 4 ||
+        originalSource.id == kAaCreditAccountId ||
+        originalTarget.id == kAaCreditAccountId ||
+        b.isAa ||
+        b.aaGroupId != null ||
+        b.settlementId != null ||
+        Currency.tryFromCode(originalTarget.currency) == null ||
+        b.currency != originalSource.currency ||
+        b.amount != b.accountAmount ||
+        b.amount < 0 ||
+        (b.toAccountAmount != null &&
+            (b.toAccountAmount! < 0 ||
+                (originalSource.currency == originalTarget.currency
+                    ? b.toAccountAmount != b.amount
+                    : b.toAccountAmount == 0 || b.amount == 0))));
+  }
+
+  bool _needsReceived(Account source, Account target) =>
+      source.currency != target.currency || _requireReceivedConfirmation;
+
+  int? _incomingAmount(Account source, Account target, int units) =>
+      _needsReceived(source, target)
+      ? (_receivedConfirmed(source, target, units) ? _receivedAmount : null)
+      : units;
+
+  Future<void> _pickReceivedAmount(Account source, Account target) async {
+    final units = evaluateMoneyExpression(_amount, _currency);
+    if (_hasOperator || units == null || units <= 0 || source.id == target.id) {
+      _snack('请先选择不同账户并输入有效出账金额，表达式需先按 =');
+      return;
+    }
+    final signature = _transferSignature(source, target, units);
+    final sameCurrency = source.currency == target.currency;
+    final amount = await _showActualAmountDialog(
+      context,
+      currency: Currency.tryFromCode(target.currency)!,
+      income: true,
+      title: '转入账户实际入账',
+      equalAmount: sameCurrency ? units : null,
+      initial: _receivedConfirmed(source, target, units)
+          ? _receivedAmount
+          : sameCurrency
+          ? units
+          : null,
+    );
+    if (amount == null || !mounted || _type != 2) return;
+    final current = _entryAccounts(
+      ref.read(accountsProvider).value ?? const <Account>[],
+    );
+    final currentSource = current.where((a) => a.id == _accountId).firstOrNull;
+    final currentTarget = current
+        .where((a) => a.id == _toAccountId)
+        .firstOrNull;
+    final currentUnits = evaluateMoneyExpression(_amount, _currency);
+    if (currentSource == null ||
+        currentTarget == null ||
+        currentUnits == null ||
+        signature !=
+            _transferSignature(currentSource, currentTarget, currentUnits)) {
+      _snack('账户或出账金额已变化，请重新确认入账金额');
+      return;
+    }
+    setState(() {
+      _receivedAmount = amount;
+      _receivedSignature = signature;
+      _originalReceived = false;
+      if (!sameCurrency) _requireReceivedConfirmation = true;
+    });
   }
 
   String _signature(Account account, int units) =>
@@ -118,6 +223,8 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       _categoryId = b.categoryId;
       _accountId = b.accountId;
       _toAccountId = b.toAccountId;
+      _receivedAmount = b.toAccountAmount;
+      _originalReceived = b.type == 2;
     }
   }
 
@@ -333,41 +440,49 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     if (_hasOperator || parsed == null) return _snack('非法参数');
     final cents = parsed;
     final accId = _effectiveAccountId(accounts) ?? '';
-    final toId =
-        entryAccountId(accounts, _toAccountId, excludeDefaultId: accId) ?? '';
+    final toId = transferTargetAccountId(accounts, _toAccountId, accId) ?? '';
 
     final catId = _selectedCategory(categories);
 
     if (cents <= 0) return _snack('请输入金额');
     if (accId.isEmpty) {
       return _snack(
-        _type == 2
-            ? (accounts.isEmpty || _accountId == null
-                  ? noCnyAccountMessage
-                  : staleCnyAccountMessage)
-            : (accounts.isEmpty || _accountId == null
-                  ? noEntryAccountMessage
-                  : staleEntryAccountMessage),
+        accounts.isEmpty || _accountId == null
+            ? noEntryAccountMessage
+            : staleEntryAccountMessage,
       );
     }
     final account = accounts.firstWhere((a) => a.id == accId);
     final crossCurrency = account.currency != _currency.code;
-    if (crossCurrency && !_actualConfirmed(account, cents)) {
+    if (_type != 2 && crossCurrency && !_actualConfirmed(account, cents)) {
       return _snack('请确认账户实际收付款额');
     }
-    final actual = crossCurrency ? _actualAmount! : cents;
+    final actual = _type != 2 && crossCurrency ? _actualAmount! : cents;
     if (actual <= 0) return _snack('账户实际收付款额须大于零');
     // 转账只允许本人钱包互转：双方必填、互不相同、且不得涉及「AA挂账」
     // （跨人资金往来应记收入/支出，不允许以转账形式出现）
+    Account? target;
+    int? incoming;
     if (_type == 2) {
       if (accId.isEmpty || toId.isEmpty) {
         return _snack(
-          _toAccountId == null ? '转账需至少两个不同的人民币账户' : staleCnyAccountMessage,
+          _toAccountId == null ? '转账需至少两个不同的真实账户' : staleEntryAccountMessage,
         );
       }
       if (toId == accId) return _snack('转入账户需与转出账户不同');
       if (accId == kAaCreditAccountId || toId == kAaCreditAccountId) {
         return _snack('转账仅限本人钱包之间，跨人往来请记收入或支出');
+      }
+      target = accounts.firstWhere((a) => a.id == toId);
+      if (account.currency != _currency.code) {
+        return _snack('出账账户币种已变化，请重新选择账户');
+      }
+      incoming = _incomingAmount(account, target, cents);
+      if (incoming == null || incoming <= 0) {
+        return _snack('请确认转入账户实际入账金额');
+      }
+      if (account.currency == target.currency && incoming != cents) {
+        return _snack('同币种转账的出账与入账金额必须一致');
       }
     }
 
@@ -394,8 +509,18 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         final original = widget.bill;
         final currentAccount = await db.getAccount(accId);
         if (currentAccount == null ||
-            currentAccount.currency != account.currency) {
+            currentAccount.currency != account.currency ||
+            (_type == 2 && currentAccount.type != account.type)) {
           throw StateError(staleEntryAccountMessage);
+        }
+        final selectedTarget = target;
+        if (selectedTarget != null) {
+          final currentTarget = await db.getAccount(selectedTarget.id);
+          if (currentTarget == null ||
+              currentTarget.currency != selectedTarget.currency ||
+              currentTarget.type != selectedTarget.type) {
+            throw StateError(staleEntryAccountMessage);
+          }
         }
         if (original != null) {
           final current = await (db.select(
@@ -410,6 +535,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           if (await db.getAccount(current.accountId) == null) {
             throw StateError('原账户已不存在，无法确认历史币种，暂不能修改该账单');
           }
+          if (current.type == 2 &&
+              (current.toAccountId == null ||
+                  await db.getAccount(current.toAccountId!) == null)) {
+            throw StateError('原转入账户已不存在，暂不能修改该账单');
+          }
           if (current != original) {
             throw StateError('账单已变化，请返回重新打开');
           }
@@ -423,6 +553,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           categoryId: _type == 2 ? null : catId,
           accountId: accId,
           toAccountId: _type == 2 ? toId : null,
+          toAccountAmount: _type == 2 ? incoming : null,
           dateMs: _date.millisecondsSinceEpoch,
           note: _noteCtl.text.trim(),
           aaGroupId: widget.bill?.aaGroupId,
@@ -499,6 +630,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       setState(() {
         _amount = '';
         _invalidateActual();
+        _requireReceivedConfirmation = false;
         _noteCtl.clear();
       });
       _snack('已保存，继续记下一笔');
@@ -947,6 +1079,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     if (picked == null || !mounted) return;
     setState(() {
       if (to) {
+        if (_toAccountId != picked) _invalidateActual();
         _toAccountId = picked;
       } else {
         if (_accountId != picked) _invalidateActual();
@@ -1053,14 +1186,27 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
               (a.id == b.accountId || a.id == b.toAccountId) &&
               a.currency != 'CNY',
         );
+    // 旧人民币关联转账沿用既有只读页面，不将它当作普通本人转账开放。
     if (b != null &&
-        (Currency.tryFromCode(b.currency) == null ||
+        b.type == 2 &&
+        b.currency == 'CNY' &&
+        !hasForeignAccount &&
+        (b.isAa || b.aaGroupId != null || b.settlementId != null)) {
+      return _AaLockedView(
+        bill: b,
+        accounts: allAccounts,
+        categories: categories,
+      );
+    }
+    if (b != null &&
+        (_unsafeTransferHistory(b, allAccounts) ||
+            Currency.tryFromCode(b.currency) == null ||
             allAccounts.any(
               (a) =>
                   a.id == b.accountId &&
                   Currency.tryFromCode(a.currency) == null,
             ) ||
-            ((b.type == 2 || b.settlementId != null || b.aaGroupId != null) &&
+            ((b.settlementId != null || b.aaGroupId != null) &&
                 (b.currency != 'CNY' || hasForeignAccount)))) {
       return Scaffold(
         appBar: AppBar(title: const Text('暂不能编辑')),
@@ -1112,11 +1258,14 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final effAccountId = _effectiveAccountId(accounts);
     // 首次展示后固定默认钱包；列表刷新/重排不能替用户换账户。
     if (_accountId == null && effAccountId != null) _accountId = effAccountId;
-    final effToId = entryAccountId(
+    final effToId = transferTargetAccountId(
       accounts,
       _toAccountId,
-      excludeDefaultId: effAccountId,
+      effAccountId,
     );
+    if (isTransfer && _toAccountId == null && effToId != null) {
+      _toAccountId = effToId;
+    }
     final effCatId = _selectedCategory(categories);
 
     Account? selAcc;
@@ -1126,6 +1275,21 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     Account? selToAcc;
     for (final a in accounts) {
       if (a.id == effToId) selToAcc = a;
+    }
+    if (isTransfer && selAcc != null) {
+      final sourceCurrency = Currency.tryFromCode(selAcc.currency)!;
+      if (_currency != sourceCurrency) {
+        _invalidateActual();
+        _currency = sourceCurrency;
+      }
+      final originalTarget = allAccounts
+          .where((a) => a.id == b?.toAccountId)
+          .firstOrNull;
+      if (b?.type == 2 &&
+          originalTarget != null &&
+          originalTarget.currency != b!.currency) {
+        _requireReceivedConfirmation = true;
+      }
     }
     final centsNow = _evaluatedCents();
 
@@ -1138,7 +1302,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     if (isTransfer) {
       if (selAcc != null && selToAcc != null && centsNow > 0) {
         hints.add(
-          '「${selAcc.name}」→「${selToAcc.name}」¥ ${centsToText(centsNow)}',
+          '出账 ${_currency.code} ${formatMinorUnits(centsNow, _currency, grouping: false)} → 入账 ${selToAcc.currency} ${_incomingAmount(selAcc, selToAcc, centsNow) == null ? '待确认' : formatMinorUnits(_incomingAmount(selAcc, selToAcc, centsNow)!, Currency.tryFromCode(selToAcc.currency)!, grouping: false)}',
         );
       }
     } else {
@@ -1168,7 +1332,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           IconButton(
             icon: const Icon(Icons.photo_camera_outlined),
             tooltip: '图片识别记账',
-            onPressed: _saving ? null : _pickOcrImage,
+            onPressed: _saving
+                ? null
+                : isTransfer
+                ? () => _snack('转账请手动确认出账和入账金额，图片识别仅用于收支记账')
+                : _pickOcrImage,
           ),
           if (widget.bill != null &&
               widget.bill!.aaGroupId == null &&
@@ -1213,7 +1381,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                 ),
               Expanded(
                 child: isTransfer
-                    ? const SizedBox.shrink()
+                    ? _transferSummary(selAcc, selToAcc, centsNow)
                     : CategoryPicker(
                         key: ValueKey('category-picker-$_type'),
                         categories: categories,
@@ -1305,11 +1473,13 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                                 '出 · ${selAcc?.name ?? '选择'}',
                                 selAcc?.emoji,
                                 () => _pickAccount(),
+                                key: const ValueKey('entry-account'),
                               ),
                               _accountChip(
                                 '入 · ${selToAcc?.name ?? '选择'}',
                                 selToAcc?.emoji,
                                 () => _pickAccount(to: true),
+                                key: const ValueKey('transfer-to-account'),
                               ),
                             ] else ...[
                               _accountChip(
@@ -1360,14 +1530,15 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                                     },
                                   ),
                                 ),
-                              Padding(
-                                padding: const EdgeInsets.only(right: 8),
-                                child: ActionChip(
-                                  label: Text(_dateChipLabel),
-                                  onPressed: isAaShareEdit ? null : _pickDate,
-                                ),
-                              ),
                             ],
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: ActionChip(
+                                key: const ValueKey('entry-date'),
+                                label: Text(_dateChipLabel),
+                                onPressed: isAaShareEdit ? null : _pickDate,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -1429,6 +1600,59 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     );
   }
 
+  Widget _transferSummary(Account? source, Account? target, int units) {
+    final incoming = source != null && target != null
+        ? _incomingAmount(source, target, units)
+        : null;
+    final targetCurrency = target == null
+        ? null
+        : Currency.tryFromCode(target.currency);
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Text(
+          '出账 · ${source?.name ?? '请选择账户'} · ${source?.currency ?? '—'}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '${_currency.code} $_displayAmount',
+          style: const TextStyle(fontSize: 24),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          '入账 · ${target?.name ?? '请选择账户'} · ${target?.currency ?? '—'}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 8),
+        FilledButton.tonal(
+          key: const ValueKey('transfer-received-amount'),
+          onPressed:
+              source == null ||
+                  target == null ||
+                  !_needsReceived(source, target)
+              ? null
+              : () => _pickReceivedAmount(source, target),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              '入账 ${target?.currency ?? '—'} ${incoming == null || targetCurrency == null ? '待确认' : formatMinorUnits(incoming, targetCurrency, grouping: false)}',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          source?.currency == target?.currency
+              ? '同币种出入金额相等；手续费请单独记支出。'
+              : '分别确认两侧实际金额，不自动换算汇率。',
+        ),
+      ],
+    );
+  }
+
   Widget _typeTab(int t, String label) {
     final selected = _type == t;
     return GestureDetector(
@@ -1440,10 +1664,6 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           return;
         }
         if (_type == t || _saving) return;
-        if (t == 2 && _currency != Currency.cny) {
-          _snack('多币种转账入口将在下一小点开放');
-          return;
-        }
         setState(() {
           _invalidateActual();
           _type = t;
@@ -1577,10 +1797,17 @@ Future<int?> _showActualAmountDialog(
   required Currency currency,
   required bool income,
   int? initial,
+  String? title,
+  int? equalAmount,
 }) => showDialog<int>(
   context: context,
-  builder: (_) =>
-      _ActualAmountDialog(currency: currency, income: income, initial: initial),
+  builder: (_) => _ActualAmountDialog(
+    currency: currency,
+    income: income,
+    initial: initial,
+    title: title,
+    equalAmount: equalAmount,
+  ),
 );
 
 class _ActualAmountDialog extends StatefulWidget {
@@ -1588,11 +1815,15 @@ class _ActualAmountDialog extends StatefulWidget {
     required this.currency,
     required this.income,
     this.initial,
+    this.title,
+    this.equalAmount,
   });
 
   final Currency currency;
   final bool income;
   final int? initial;
+  final String? title;
+  final int? equalAmount;
 
   @override
   State<_ActualAmountDialog> createState() => _ActualAmountDialogState();
@@ -1622,13 +1853,17 @@ class _ActualAmountDialogState extends State<_ActualAmountDialog> {
       );
       return;
     }
+    if (widget.equalAmount != null && units != widget.equalAmount) {
+      setState(() => _error = '同币种转账的出账与入账金额必须一致');
+      return;
+    }
     Navigator.pop(context, units);
   }
 
   @override
   Widget build(BuildContext context) => AlertDialog(
     scrollable: true,
-    title: Text(widget.income ? '账户实际入账' : '账户实际扣款'),
+    title: Text(widget.title ?? (widget.income ? '账户实际入账' : '账户实际扣款')),
     content: TextField(
       key: const ValueKey('account-amount-input'),
       controller: _controller,

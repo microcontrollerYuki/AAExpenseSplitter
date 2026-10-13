@@ -5,6 +5,32 @@ import 'currency.dart';
 const noEntryAccountMessage = '暂无可用账户，请先在「账本」中创建';
 const staleEntryAccountMessage = '所选账户已变化，请重新选择账户';
 
+/// 本人转账可使用支持币种的真实钱包，不能使用任何 AA 挂账账户。
+List<Account> transferEntryAccounts(Iterable<Account> accounts) => accounts
+    .where(
+      (account) =>
+          Currency.tryFromCode(account.currency) != null &&
+          account.type != 4 &&
+          account.id != kAaCreditAccountId,
+    )
+    .toList();
+
+/// 新转账优先同币目标；仅有跨币钱包时也可选择。显式失效不换绑。
+String? transferTargetAccountId(
+  List<Account> accounts,
+  String? selectedId,
+  String? sourceId,
+) {
+  if (selectedId != null) return entryAccountId(accounts, selectedId);
+  final source = accounts.where((a) => a.id == sourceId).firstOrNull;
+  for (final account in accounts) {
+    if (account.id != sourceId && account.currency == source?.currency) {
+      return account.id;
+    }
+  }
+  return entryAccountId(accounts, null, excludeDefaultId: sourceId);
+}
+
 /// 普通收支可选各支持币种钱包；AA 挂账只用于人民币交易。
 List<Account> bookkeepingEntryAccounts(
   Iterable<Account> accounts,
@@ -34,8 +60,7 @@ String? bookkeepingAccountId(
 const noCnyAccountMessage = '暂无可用人民币账户，请先在「账本」中创建';
 const staleCnyAccountMessage = '所选账户已变化，请重新选择人民币账户';
 
-/// 在币种记账入口开放前，旧记账与 OCR 界面仍固定使用 CNY。
-/// 普通收支保留既有 AA 挂账用途；转账和结算仅接受真实钱包。
+/// 既有 AA / 结算仍限 CNY；结算仅接受真实钱包。
 List<Account> cnyEntryAccounts(
   Iterable<Account> accounts, {
   bool includeAaCredit = true,
