@@ -1,6 +1,7 @@
 import '../data/app_database.dart';
 import 'currency.dart';
 import 'money.dart';
+import 'report_filter.dart';
 
 /// Format stored minor units exactly. Unknown historical codes keep their raw
 /// units instead of silently adopting CNY precision.
@@ -40,18 +41,15 @@ String displayBillAmount(Bill bill, {bool prefix = false}) {
   Iterable<Category> categories,
   String currency,
 ) {
-  final internal = {
-    for (final category in categories)
-      if (category.kind == 2) category.id,
-  };
   var income = BigInt.zero;
   var expense = BigInt.zero;
-  for (final bill in bills) {
-    if (bill.currency != currency || bill.deletedAt != null) continue;
+  for (final bill in filterReportBills(
+    bills: bills,
+    categories: categories,
+    filter: ReportFilter(currency: currency),
+  )) {
     if (bill.type == 0) expense += BigInt.from(bill.amount);
-    if (bill.type == 1 && !internal.contains(bill.categoryId)) {
-      income += BigInt.from(bill.amount);
-    }
+    if (bill.type == 1) income += BigInt.from(bill.amount);
   }
   return (income: income, expense: expense);
 }

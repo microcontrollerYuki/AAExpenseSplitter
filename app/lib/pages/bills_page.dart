@@ -8,6 +8,7 @@ import '../theme.dart';
 import '../utils/balance.dart';
 import '../utils/bill_money.dart';
 import '../utils/money.dart';
+import '../utils/report.dart';
 import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
 import 'accounts_page.dart';
@@ -28,10 +29,13 @@ class BillsPage extends ConsumerWidget {
     final accBy = {for (final a in accounts) a.id: a};
     final catBy = {for (final c in categories) c.id: c};
 
-    final totals = summarizeBills(
-      billsAsync.value ?? const <Bill>[],
-      categories,
-      currency,
+    final totals = buildReport(
+      bills: billsAsync.value ?? const <Bill>[],
+      categories: categories,
+      filter: ReportFilter(
+        period: ReportPeriod.month(month),
+        currency: currency,
+      ),
     );
 
     return Scaffold(
@@ -92,17 +96,14 @@ class BillsPage extends ConsumerWidget {
                     final d = DateTime.fromMillisecondsSinceEpoch(
                       dayBills.first.dateMs,
                     );
-                    final dayExp = dayBills
-                        .where(
-                          (b) =>
-                              b.type == 0 &&
-                              b.currency == currency &&
-                              b.deletedAt == null,
-                        )
-                        .fold<BigInt>(
-                          BigInt.zero,
-                          (s, b) => s + BigInt.from(b.amount),
-                        );
+                    final dayExp = buildReport(
+                      bills: dayBills,
+                      categories: categories,
+                      filter: ReportFilter(
+                        period: ReportPeriod.inclusiveDays(d, d),
+                        currency: currency,
+                      ),
+                    ).expense;
                     return _DayGroup(
                       date: d,
                       dayExpense: dayExp,

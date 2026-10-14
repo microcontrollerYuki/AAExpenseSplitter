@@ -10,6 +10,7 @@ import '../theme.dart';
 import '../utils/bill_money.dart';
 import '../utils/category_stats.dart';
 import '../utils/currency.dart';
+import '../utils/report.dart';
 import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
 
@@ -23,7 +24,6 @@ class StatsPage extends ConsumerWidget {
     final currency = ref.watch(selectedCurrencyProvider);
     final monthBillsAsync = ref.watch(monthBillsProvider);
     final allBillsAsync = ref.watch(allBillsProvider);
-    final monthBills = monthBillsAsync.value ?? const <Bill>[];
     final allBills = allBillsAsync.value ?? const <Bill>[];
     final categoriesAsync = ref.watch(categoriesProvider);
     // Internal-income exclusions require the category metadata. Never draw
@@ -65,24 +65,25 @@ class StatsPage extends ConsumerWidget {
       );
     }
     final categories = categoriesAsync.value ?? const <Category>[];
-    final expenseStats = aggregateCategoryStats(
-      bills: monthBills,
+    final report = buildReport(
+      // Both the category chart and trend use one database snapshot, so a
+      // delayed monthly stream cannot briefly disagree with the trend.
+      bills: allBills,
       categories: categories,
-      type: 0,
-      currency: currency,
+      filter: ReportFilter(period: ReportPeriod.month(m), currency: currency),
     );
 
     // 近 6 个月趋势（以选中月份为终点）
     final trend = <_MonthSum>[];
     for (var i = 5; i >= 0; i--) {
       final mm = DateTime(m.year, m.month - i, 1);
-      final summary = summarizeBills(
-        allBills.where((bill) {
-          final d = DateTime.fromMillisecondsSinceEpoch(bill.dateMs);
-          return d.year == mm.year && d.month == mm.month;
-        }),
-        categories,
-        currency,
+      final summary = buildReport(
+        bills: allBills,
+        categories: categories,
+        filter: ReportFilter(
+          period: ReportPeriod.month(mm),
+          currency: currency,
+        ),
       );
       trend.add(
         _MonthSum(
@@ -102,7 +103,7 @@ class StatsPage extends ConsumerWidget {
           CurrencyFilter(bills: allBills),
           _CategoryPieCard(
             key: ValueKey('${m.year}-${m.month}-$currency'),
-            stats: expenseStats,
+            stats: report.expenseStats,
             currency: currency,
           ),
           const SizedBox(height: 12),

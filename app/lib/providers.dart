@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'data/app_database.dart';
 import 'sync/aa_sync_service.dart';
+import 'utils/report_filter.dart';
 
 final databaseProvider = Provider<AppDatabase>((ref) {
   final db = AppDatabase();
@@ -69,9 +70,10 @@ final allBillsProvider = StreamProvider<List<Bill>>(
 
 final monthBillsProvider = StreamProvider<List<Bill>>((ref) {
   final m = ref.watch(selectedMonthProvider);
-  final start = DateTime(m.year, m.month, 1).millisecondsSinceEpoch;
-  final end = DateTime(m.year, m.month + 1, 1).millisecondsSinceEpoch;
-  return ref.watch(databaseProvider).watchBillsOfRange(start, end);
+  final period = ReportPeriod.month(m);
+  return ref
+      .watch(databaseProvider)
+      .watchBillsOfRange(period.startMs, period.endMs);
 });
 
 final aaGroupsProvider = StreamProvider<List<AaGroup>>(

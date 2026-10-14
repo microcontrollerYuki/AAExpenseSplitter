@@ -1,5 +1,6 @@
 import '../data/app_database.dart';
 import '../data/category_hierarchy.dart';
+import 'report_filter.dart';
 
 class CategoryStatAmount {
   const CategoryStatAmount({required this.category, required this.amount});
@@ -57,16 +58,12 @@ CategoryStats aggregateCategoryStats({
   final direct = <String?, BigInt>{};
   final children = <String, Map<String, BigInt>>{};
   var total = BigInt.zero;
-  for (final bill in bills) {
-    if (bill.type != type ||
-        bill.deletedAt != null ||
-        bill.currency != currency) {
-      continue;
-    }
+  for (final bill in filterReportBills(
+    bills: bills,
+    categories: byId.values,
+    filter: ReportFilter(currency: currency, type: type),
+  )) {
     final category = byId[bill.categoryId];
-    // Match the existing monthly summary: AA receivables are internal income;
-    // actual expenses (including historical kind=2 references) still count.
-    if (type == 1 && category?.kind == 2) continue;
     final root = hierarchy.rootOf(category?.id);
     final amount = BigInt.from(bill.amount);
     totals[root?.id] = (totals[root?.id] ?? BigInt.zero) + amount;
