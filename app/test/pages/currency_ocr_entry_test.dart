@@ -118,9 +118,9 @@ void main() {
       await _selectAccount(tester, '${sample.currency.displayName}钱包');
       await _tap(tester, find.text('采用并填入'));
       expect(
-        find.widgetWithText(
-          ActionChip,
-          '${sample.currency.displayName} ${sample.currency.code}',
+        find.descendant(
+          of: _key('entry-currency'),
+          matching: find.text(sample.currency.code),
         ),
         findsOneWidget,
       );
@@ -243,7 +243,10 @@ void main() {
     ], bill: before);
     Navigator.of(tester.element(find.text('图片识别结果'))).pop();
     await settleProviders(tester);
-    expect(find.widgetWithText(ActionChip, '美元 USD'), findsOneWidget);
+    expect(
+      find.descendant(of: _key('entry-currency'), matching: find.text('USD')),
+      findsOneWidget,
+    );
     await _save(tester);
 
     final after = (await db.getAllBills()).single;

@@ -56,19 +56,26 @@ void main() {
         );
         await tester.pump();
       }
-      expect(_inEditor(find.text(example.input)).hitTestable(), findsOneWidget);
-      expect(
-        tester.getRect(_inEditor(find.text(' CNY'))).right,
-        closeTo(348, 1),
+      final amount = _inEditor(
+        find.byKey(const ValueKey('entry-displayed-amount')),
       );
+      final currency = _inEditor(find.byKey(const ValueKey('entry-currency')));
+      expect(amount.hitTestable(), findsOneWidget);
+      expect(tester.widget<Text>(amount).data, example.input);
+      expect(currency.hitTestable(), findsOneWidget);
+      expect(
+        find.descendant(of: currency, matching: find.text('CNY')),
+        findsOneWidget,
+      );
+      final currencyRect = tester.getRect(currency);
+      expect(currencyRect.right, closeTo(348, 1));
+      expect(currencyRect.width, greaterThanOrEqualTo(48));
+      expect(currencyRect.height, greaterThanOrEqualTo(48));
       final noteRect = tester.getRect(_inEditor(find.byType(TextField)));
-      final inputRect = tester.getRect(_inEditor(find.text(example.input)));
+      final inputRect = tester.getRect(amount);
       expect(noteRect.right + 8, closeTo(inputRect.left, 1));
       expect(noteRect.width, greaterThan(120));
-      expect(
-        inputRect.right + 4,
-        closeTo(tester.getRect(_inEditor(find.text(' CNY'))).left, 1),
-      );
+      expect(inputRect.right + 4, closeTo(currencyRect.left, 1));
       expect(tester.takeException(), isNull);
       final note = '精确输入 ${example.input}';
       await tester.enterText(_inEditor(find.byType(TextField)), note);

@@ -595,7 +595,10 @@ void main() {
       tester.widget<TextField>(find.byType(TextField)).controller!.text,
       isEmpty,
     );
-    expect(find.widgetWithText(ActionChip, '美元 USD'), findsOneWidget);
+    expect(
+      find.descendant(of: _key('entry-currency'), matching: find.text('USD')),
+      findsOneWidget,
+    );
     await _amount(tester, '11');
     await _save(tester);
     expect((await db.getAllBills()).length, 1);
@@ -613,7 +616,7 @@ void main() {
     await disposePage(tester, db);
   });
 
-  testWidgets('360宽屏可滚动使用币种与实扣胶囊并正常保存', (tester) async {
+  testWidgets('360宽屏可用金额右侧币种入口与实扣胶囊并正常保存', (tester) async {
     tester.view.physicalSize = const Size(360, 640);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -637,7 +640,10 @@ void main() {
     await _open(tester, db);
     await _tap(tester, find.widgetWithText(FilterChip, '🤝 AA平分'));
     await _currency(tester, Currency.usd);
-    expect(find.widgetWithText(ActionChip, '人民币 CNY'), findsOneWidget);
+    expect(
+      find.descendant(of: _key('entry-currency'), matching: find.text('CNY')),
+      findsOneWidget,
+    );
     expect(
       tester
           .widget<FilterChip>(find.widgetWithText(FilterChip, '🤝 AA平分'))

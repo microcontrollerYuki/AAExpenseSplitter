@@ -1424,25 +1424,76 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                           const SizedBox(width: 8),
                           ConstrainedBox(
                             constraints: BoxConstraints(
-                              maxWidth: constraints.maxWidth * 0.65,
+                              maxWidth: constraints.maxWidth * 0.72,
                             ),
-                            child: FittedBox(
-                              fit: BoxFit.scaleDown,
-                              alignment: Alignment.centerRight,
-                              child: Text(
-                                _displayAmount,
-                                style: TextStyle(
-                                  fontSize: 32,
-                                  fontWeight: FontWeight.bold,
-                                  color: amountColor,
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    alignment: Alignment.centerRight,
+                                    child: Text(
+                                      _displayAmount,
+                                      key: const ValueKey(
+                                        'entry-displayed-amount',
+                                      ),
+                                      style: TextStyle(
+                                        fontSize: 32,
+                                        fontWeight: FontWeight.bold,
+                                        color: amountColor,
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                              ),
+                                const SizedBox(width: 4),
+                                if (isTransfer)
+                                  Tooltip(
+                                    message: '币种由出账账户决定',
+                                    child: Text(
+                                      ' ${_currency.code}',
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  Tooltip(
+                                    message: '选择币种',
+                                    child: TextButton(
+                                      key: const ValueKey('entry-currency'),
+                                      style: TextButton.styleFrom(
+                                        minimumSize: const Size(48, 48),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 4,
+                                        ),
+                                      ),
+                                      onPressed: _pickCurrency,
+                                      child: Semantics(
+                                        label:
+                                            '${_currency.displayName} ${_currency.code}，选择币种',
+                                        excludeSemantics: true,
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              _currency.code,
+                                              style: const TextStyle(
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                            const Icon(
+                                              Icons.arrow_drop_down,
+                                              size: 16,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            ' ${_currency.code}',
-                            style: TextStyle(fontSize: 13, color: Colors.grey),
                           ),
                         ],
                       ),
@@ -1487,16 +1538,6 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                                 selAcc?.emoji,
                                 () => _pickAccount(),
                                 key: const ValueKey('entry-account'),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.only(right: 8),
-                                child: ActionChip(
-                                  key: const ValueKey('entry-currency'),
-                                  label: Text(
-                                    '${_currency.displayName} ${_currency.code}',
-                                  ),
-                                  onPressed: _pickCurrency,
-                                ),
                               ),
                               if (selAcc != null &&
                                   selAcc.currency != _currency.code)
