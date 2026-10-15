@@ -68,6 +68,11 @@ final allBillsProvider = StreamProvider<List<Bill>>(
   (ref) => ref.watch(databaseProvider).watchAllBills(),
 );
 
+/// Includes cancelled fees, so old edit/delete paths cannot detach history.
+final transferFeeProvider = StreamProvider.family<Bill?, String>(
+  (ref, id) => ref.watch(databaseProvider).watchTransferFee(id),
+);
+
 final monthBillsProvider = StreamProvider<List<Bill>>((ref) {
   final m = ref.watch(selectedMonthProvider);
   final period = ReportPeriod.month(m);

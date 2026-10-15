@@ -345,7 +345,7 @@ Future<void> _expectUpgrade(AppDatabase db, _Rows oldRows) async {
   );
   expect(added.read<int>('notnull'), 0);
   final version = await db.customSelect('PRAGMA user_version').getSingle();
-  expect(version.read<int>('user_version'), 5);
+  expect(version.read<int>('user_version'), 6);
 }
 
 Future<_Rows> _currentRows(AppDatabase db) async {
@@ -360,7 +360,7 @@ Future<_Rows> _currentRows(AppDatabase db) async {
 }
 
 void main() {
-  test('真实v4升v5仅回填安全同币转账，六表旧值及重开保持一致', () async {
+  test('真实v4升v6仅回填安全同币转账，六表旧值及重开保持一致', () async {
     final directory = Directory.systemTemp.createTempSync('transfer_v4_');
     addTearDown(() => directory.deleteSync(recursive: true));
     final file = File('${directory.path}/legacy.sqlite');

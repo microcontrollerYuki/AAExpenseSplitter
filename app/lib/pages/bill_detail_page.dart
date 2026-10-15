@@ -87,15 +87,31 @@ class BillDetailPage extends ConsumerWidget {
     }
     final isAa = bill.aaGroupId != null || bill.isAa;
     final isSettlement = bill.settlementId != null;
+    // 包括已取消费用；active 账单流无法证明转账没有手续费历史。
+    final feeState = bill.type == 2
+        ? ref.watch(transferFeeProvider(bill.id))
+        : null;
+    final feeReadOnly =
+        bill.feeTransferId != null ||
+        bill.feeDeletedWithTransferAt != null ||
+        (feeState != null &&
+            (!feeState.hasValue ||
+                feeState.isLoading ||
+                feeState.hasError ||
+                feeState.value != null));
 
     return _frame(
       context,
-      onEdit: () {
-        if (ModalRoute.of(context)?.isCurrent != true) return;
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => EditBillPage(bill: bill)),
-        );
-      },
+      onEdit: feeReadOnly
+          ? null
+          : () {
+              if (ModalRoute.of(context)?.isCurrent != true) return;
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => EditBillPage(bill: bill),
+                ),
+              );
+            },
       child: SingleChildScrollView(
         key: const ValueKey('bill-detail-scroll'),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
@@ -113,6 +129,13 @@ class BillDetailPage extends ConsumerWidget {
               isAa,
               isSettlement,
             ),
+            if (bill.feeTransferId != null ||
+                bill.feeDeletedWithTransferAt != null ||
+                feeState?.value != null)
+              const Padding(
+                padding: EdgeInsets.only(top: 12),
+                child: Text('手续费需随转账统一修改，暂未开放编辑'),
+              ),
           ],
         ),
       ),

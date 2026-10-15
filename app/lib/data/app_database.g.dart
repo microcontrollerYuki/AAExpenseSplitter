@@ -1071,6 +1071,28 @@ class $BillsTable extends Bills with TableInfo<$BillsTable, Bill> {
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _feeTransferIdMeta = const VerificationMeta(
+    'feeTransferId',
+  );
+  @override
+  late final GeneratedColumn<String> feeTransferId = GeneratedColumn<String>(
+    'fee_transfer_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _feeDeletedWithTransferAtMeta =
+      const VerificationMeta('feeDeletedWithTransferAt');
+  @override
+  late final GeneratedColumn<int> feeDeletedWithTransferAt =
+      GeneratedColumn<int>(
+        'fee_deleted_with_transfer_at',
+        aliasedName,
+        true,
+        type: DriftSqlType.int,
+        requiredDuringInsert: false,
+      );
   static const VerificationMeta _categoryIdMeta = const VerificationMeta(
     'categoryId',
   );
@@ -1199,6 +1221,8 @@ class $BillsTable extends Bills with TableInfo<$BillsTable, Bill> {
     currency,
     accountAmount,
     toAccountAmount,
+    feeTransferId,
+    feeDeletedWithTransferAt,
     categoryId,
     accountId,
     toAccountId,
@@ -1265,6 +1289,24 @@ class $BillsTable extends Bills with TableInfo<$BillsTable, Bill> {
         toAccountAmount.isAcceptableOrUnknown(
           data['to_account_amount']!,
           _toAccountAmountMeta,
+        ),
+      );
+    }
+    if (data.containsKey('fee_transfer_id')) {
+      context.handle(
+        _feeTransferIdMeta,
+        feeTransferId.isAcceptableOrUnknown(
+          data['fee_transfer_id']!,
+          _feeTransferIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('fee_deleted_with_transfer_at')) {
+      context.handle(
+        _feeDeletedWithTransferAtMeta,
+        feeDeletedWithTransferAt.isAcceptableOrUnknown(
+          data['fee_deleted_with_transfer_at']!,
+          _feeDeletedWithTransferAtMeta,
         ),
       );
     }
@@ -1381,6 +1423,14 @@ class $BillsTable extends Bills with TableInfo<$BillsTable, Bill> {
         DriftSqlType.int,
         data['${effectivePrefix}to_account_amount'],
       ),
+      feeTransferId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}fee_transfer_id'],
+      ),
+      feeDeletedWithTransferAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}fee_deleted_with_transfer_at'],
+      ),
       categoryId: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}category_id'],
@@ -1441,6 +1491,12 @@ class Bill extends DataClass implements Insertable<Bill> {
   final String currency;
   final int accountAmount;
   final int? toAccountAmount;
+
+  /// Only a fee expense has an owner. Retain the link after cancellation.
+  final String? feeTransferId;
+
+  /// Non-null only when this expense was deleted together with its transfer.
+  final int? feeDeletedWithTransferAt;
   final String? categoryId;
   final String accountId;
   final String? toAccountId;
@@ -1459,6 +1515,8 @@ class Bill extends DataClass implements Insertable<Bill> {
     required this.currency,
     required this.accountAmount,
     this.toAccountAmount,
+    this.feeTransferId,
+    this.feeDeletedWithTransferAt,
     this.categoryId,
     required this.accountId,
     this.toAccountId,
@@ -1481,6 +1539,14 @@ class Bill extends DataClass implements Insertable<Bill> {
     map['account_amount'] = Variable<int>(accountAmount);
     if (!nullToAbsent || toAccountAmount != null) {
       map['to_account_amount'] = Variable<int>(toAccountAmount);
+    }
+    if (!nullToAbsent || feeTransferId != null) {
+      map['fee_transfer_id'] = Variable<String>(feeTransferId);
+    }
+    if (!nullToAbsent || feeDeletedWithTransferAt != null) {
+      map['fee_deleted_with_transfer_at'] = Variable<int>(
+        feeDeletedWithTransferAt,
+      );
     }
     if (!nullToAbsent || categoryId != null) {
       map['category_id'] = Variable<String>(categoryId);
@@ -1516,6 +1582,12 @@ class Bill extends DataClass implements Insertable<Bill> {
       toAccountAmount: toAccountAmount == null && nullToAbsent
           ? const Value.absent()
           : Value(toAccountAmount),
+      feeTransferId: feeTransferId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(feeTransferId),
+      feeDeletedWithTransferAt: feeDeletedWithTransferAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(feeDeletedWithTransferAt),
       categoryId: categoryId == null && nullToAbsent
           ? const Value.absent()
           : Value(categoryId),
@@ -1552,6 +1624,10 @@ class Bill extends DataClass implements Insertable<Bill> {
       currency: serializer.fromJson<String>(json['currency']),
       accountAmount: serializer.fromJson<int>(json['accountAmount']),
       toAccountAmount: serializer.fromJson<int?>(json['toAccountAmount']),
+      feeTransferId: serializer.fromJson<String?>(json['feeTransferId']),
+      feeDeletedWithTransferAt: serializer.fromJson<int?>(
+        json['feeDeletedWithTransferAt'],
+      ),
       categoryId: serializer.fromJson<String?>(json['categoryId']),
       accountId: serializer.fromJson<String>(json['accountId']),
       toAccountId: serializer.fromJson<String?>(json['toAccountId']),
@@ -1575,6 +1651,10 @@ class Bill extends DataClass implements Insertable<Bill> {
       'currency': serializer.toJson<String>(currency),
       'accountAmount': serializer.toJson<int>(accountAmount),
       'toAccountAmount': serializer.toJson<int?>(toAccountAmount),
+      'feeTransferId': serializer.toJson<String?>(feeTransferId),
+      'feeDeletedWithTransferAt': serializer.toJson<int?>(
+        feeDeletedWithTransferAt,
+      ),
       'categoryId': serializer.toJson<String?>(categoryId),
       'accountId': serializer.toJson<String>(accountId),
       'toAccountId': serializer.toJson<String?>(toAccountId),
@@ -1596,6 +1676,8 @@ class Bill extends DataClass implements Insertable<Bill> {
     String? currency,
     int? accountAmount,
     Value<int?> toAccountAmount = const Value.absent(),
+    Value<String?> feeTransferId = const Value.absent(),
+    Value<int?> feeDeletedWithTransferAt = const Value.absent(),
     Value<String?> categoryId = const Value.absent(),
     String? accountId,
     Value<String?> toAccountId = const Value.absent(),
@@ -1616,6 +1698,12 @@ class Bill extends DataClass implements Insertable<Bill> {
     toAccountAmount: toAccountAmount.present
         ? toAccountAmount.value
         : this.toAccountAmount,
+    feeTransferId: feeTransferId.present
+        ? feeTransferId.value
+        : this.feeTransferId,
+    feeDeletedWithTransferAt: feeDeletedWithTransferAt.present
+        ? feeDeletedWithTransferAt.value
+        : this.feeDeletedWithTransferAt,
     categoryId: categoryId.present ? categoryId.value : this.categoryId,
     accountId: accountId ?? this.accountId,
     toAccountId: toAccountId.present ? toAccountId.value : this.toAccountId,
@@ -1640,6 +1728,12 @@ class Bill extends DataClass implements Insertable<Bill> {
       toAccountAmount: data.toAccountAmount.present
           ? data.toAccountAmount.value
           : this.toAccountAmount,
+      feeTransferId: data.feeTransferId.present
+          ? data.feeTransferId.value
+          : this.feeTransferId,
+      feeDeletedWithTransferAt: data.feeDeletedWithTransferAt.present
+          ? data.feeDeletedWithTransferAt.value
+          : this.feeDeletedWithTransferAt,
       categoryId: data.categoryId.present
           ? data.categoryId.value
           : this.categoryId,
@@ -1669,6 +1763,8 @@ class Bill extends DataClass implements Insertable<Bill> {
           ..write('currency: $currency, ')
           ..write('accountAmount: $accountAmount, ')
           ..write('toAccountAmount: $toAccountAmount, ')
+          ..write('feeTransferId: $feeTransferId, ')
+          ..write('feeDeletedWithTransferAt: $feeDeletedWithTransferAt, ')
           ..write('categoryId: $categoryId, ')
           ..write('accountId: $accountId, ')
           ..write('toAccountId: $toAccountId, ')
@@ -1692,6 +1788,8 @@ class Bill extends DataClass implements Insertable<Bill> {
     currency,
     accountAmount,
     toAccountAmount,
+    feeTransferId,
+    feeDeletedWithTransferAt,
     categoryId,
     accountId,
     toAccountId,
@@ -1714,6 +1812,8 @@ class Bill extends DataClass implements Insertable<Bill> {
           other.currency == this.currency &&
           other.accountAmount == this.accountAmount &&
           other.toAccountAmount == this.toAccountAmount &&
+          other.feeTransferId == this.feeTransferId &&
+          other.feeDeletedWithTransferAt == this.feeDeletedWithTransferAt &&
           other.categoryId == this.categoryId &&
           other.accountId == this.accountId &&
           other.toAccountId == this.toAccountId &&
@@ -1734,6 +1834,8 @@ class BillsCompanion extends UpdateCompanion<Bill> {
   final Value<String> currency;
   final Value<int> accountAmount;
   final Value<int?> toAccountAmount;
+  final Value<String?> feeTransferId;
+  final Value<int?> feeDeletedWithTransferAt;
   final Value<String?> categoryId;
   final Value<String> accountId;
   final Value<String?> toAccountId;
@@ -1753,6 +1855,8 @@ class BillsCompanion extends UpdateCompanion<Bill> {
     this.currency = const Value.absent(),
     this.accountAmount = const Value.absent(),
     this.toAccountAmount = const Value.absent(),
+    this.feeTransferId = const Value.absent(),
+    this.feeDeletedWithTransferAt = const Value.absent(),
     this.categoryId = const Value.absent(),
     this.accountId = const Value.absent(),
     this.toAccountId = const Value.absent(),
@@ -1773,6 +1877,8 @@ class BillsCompanion extends UpdateCompanion<Bill> {
     this.currency = const Value.absent(),
     this.accountAmount = const Value.absent(),
     this.toAccountAmount = const Value.absent(),
+    this.feeTransferId = const Value.absent(),
+    this.feeDeletedWithTransferAt = const Value.absent(),
     this.categoryId = const Value.absent(),
     required String accountId,
     this.toAccountId = const Value.absent(),
@@ -1799,6 +1905,8 @@ class BillsCompanion extends UpdateCompanion<Bill> {
     Expression<String>? currency,
     Expression<int>? accountAmount,
     Expression<int>? toAccountAmount,
+    Expression<String>? feeTransferId,
+    Expression<int>? feeDeletedWithTransferAt,
     Expression<String>? categoryId,
     Expression<String>? accountId,
     Expression<String>? toAccountId,
@@ -1819,6 +1927,9 @@ class BillsCompanion extends UpdateCompanion<Bill> {
       if (currency != null) 'currency': currency,
       if (accountAmount != null) 'account_amount': accountAmount,
       if (toAccountAmount != null) 'to_account_amount': toAccountAmount,
+      if (feeTransferId != null) 'fee_transfer_id': feeTransferId,
+      if (feeDeletedWithTransferAt != null)
+        'fee_deleted_with_transfer_at': feeDeletedWithTransferAt,
       if (categoryId != null) 'category_id': categoryId,
       if (accountId != null) 'account_id': accountId,
       if (toAccountId != null) 'to_account_id': toAccountId,
@@ -1841,6 +1952,8 @@ class BillsCompanion extends UpdateCompanion<Bill> {
     Value<String>? currency,
     Value<int>? accountAmount,
     Value<int?>? toAccountAmount,
+    Value<String?>? feeTransferId,
+    Value<int?>? feeDeletedWithTransferAt,
     Value<String?>? categoryId,
     Value<String>? accountId,
     Value<String?>? toAccountId,
@@ -1861,6 +1974,9 @@ class BillsCompanion extends UpdateCompanion<Bill> {
       currency: currency ?? this.currency,
       accountAmount: accountAmount ?? this.accountAmount,
       toAccountAmount: toAccountAmount ?? this.toAccountAmount,
+      feeTransferId: feeTransferId ?? this.feeTransferId,
+      feeDeletedWithTransferAt:
+          feeDeletedWithTransferAt ?? this.feeDeletedWithTransferAt,
       categoryId: categoryId ?? this.categoryId,
       accountId: accountId ?? this.accountId,
       toAccountId: toAccountId ?? this.toAccountId,
@@ -1896,6 +2012,14 @@ class BillsCompanion extends UpdateCompanion<Bill> {
     }
     if (toAccountAmount.present) {
       map['to_account_amount'] = Variable<int>(toAccountAmount.value);
+    }
+    if (feeTransferId.present) {
+      map['fee_transfer_id'] = Variable<String>(feeTransferId.value);
+    }
+    if (feeDeletedWithTransferAt.present) {
+      map['fee_deleted_with_transfer_at'] = Variable<int>(
+        feeDeletedWithTransferAt.value,
+      );
     }
     if (categoryId.present) {
       map['category_id'] = Variable<String>(categoryId.value);
@@ -1945,6 +2069,8 @@ class BillsCompanion extends UpdateCompanion<Bill> {
           ..write('currency: $currency, ')
           ..write('accountAmount: $accountAmount, ')
           ..write('toAccountAmount: $toAccountAmount, ')
+          ..write('feeTransferId: $feeTransferId, ')
+          ..write('feeDeletedWithTransferAt: $feeDeletedWithTransferAt, ')
           ..write('categoryId: $categoryId, ')
           ..write('accountId: $accountId, ')
           ..write('toAccountId: $toAccountId, ')
@@ -3566,6 +3692,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $AaGroupsTable aaGroups = $AaGroupsTable(this);
   late final $SettlementsTable settlements = $SettlementsTable(this);
   late final $MetaEntriesTable metaEntries = $MetaEntriesTable(this);
+  late final Index idxBillsFeeTransfer = Index(
+    'idx_bills_fee_transfer',
+    'CREATE UNIQUE INDEX idx_bills_fee_transfer ON bills (fee_transfer_id) WHERE fee_transfer_id IS NOT NULL',
+  );
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -3577,6 +3707,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     aaGroups,
     settlements,
     metaEntries,
+    idxBillsFeeTransfer,
   ];
 }
 
@@ -4107,6 +4238,8 @@ typedef $$BillsTableCreateCompanionBuilder = BillsCompanion Function({
   Value<String> currency,
   Value<int> accountAmount,
   Value<int?> toAccountAmount,
+  Value<String?> feeTransferId,
+  Value<int?> feeDeletedWithTransferAt,
   Value<String?> categoryId,
   required String accountId,
   Value<String?> toAccountId,
@@ -4127,6 +4260,8 @@ typedef $$BillsTableUpdateCompanionBuilder = BillsCompanion Function({
   Value<String> currency,
   Value<int> accountAmount,
   Value<int?> toAccountAmount,
+  Value<String?> feeTransferId,
+  Value<int?> feeDeletedWithTransferAt,
   Value<String?> categoryId,
   Value<String> accountId,
   Value<String?> toAccountId,
@@ -4176,6 +4311,16 @@ class $$BillsTableFilterComposer extends Composer<_$AppDatabase, $BillsTable> {
 
   ColumnFilters<int> get toAccountAmount => $composableBuilder(
     column: $table.toAccountAmount,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get feeTransferId => $composableBuilder(
+    column: $table.feeTransferId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get feeDeletedWithTransferAt => $composableBuilder(
+    column: $table.feeDeletedWithTransferAt,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -4274,6 +4419,16 @@ class $$BillsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get feeTransferId => $composableBuilder(
+    column: $table.feeTransferId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get feeDeletedWithTransferAt => $composableBuilder(
+    column: $table.feeDeletedWithTransferAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get categoryId => $composableBuilder(
     column: $table.categoryId,
     builder: (column) => ColumnOrderings(column),
@@ -4361,6 +4516,16 @@ class $$BillsTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<String> get feeTransferId => $composableBuilder(
+    column: $table.feeTransferId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get feeDeletedWithTransferAt => $composableBuilder(
+    column: $table.feeDeletedWithTransferAt,
+    builder: (column) => column,
+  );
+
   GeneratedColumn<String> get categoryId => $composableBuilder(
     column: $table.categoryId,
     builder: (column) => column,
@@ -4435,6 +4600,8 @@ class $$BillsTableTableManager
                 Value<String> currency = const Value.absent(),
                 Value<int> accountAmount = const Value.absent(),
                 Value<int?> toAccountAmount = const Value.absent(),
+                Value<String?> feeTransferId = const Value.absent(),
+                Value<int?> feeDeletedWithTransferAt = const Value.absent(),
                 Value<String?> categoryId = const Value.absent(),
                 Value<String> accountId = const Value.absent(),
                 Value<String?> toAccountId = const Value.absent(),
@@ -4454,6 +4621,8 @@ class $$BillsTableTableManager
                 currency: currency,
                 accountAmount: accountAmount,
                 toAccountAmount: toAccountAmount,
+                feeTransferId: feeTransferId,
+                feeDeletedWithTransferAt: feeDeletedWithTransferAt,
                 categoryId: categoryId,
                 accountId: accountId,
                 toAccountId: toAccountId,
@@ -4475,6 +4644,8 @@ class $$BillsTableTableManager
                 Value<String> currency = const Value.absent(),
                 Value<int> accountAmount = const Value.absent(),
                 Value<int?> toAccountAmount = const Value.absent(),
+                Value<String?> feeTransferId = const Value.absent(),
+                Value<int?> feeDeletedWithTransferAt = const Value.absent(),
                 Value<String?> categoryId = const Value.absent(),
                 required String accountId,
                 Value<String?> toAccountId = const Value.absent(),
@@ -4494,6 +4665,8 @@ class $$BillsTableTableManager
                 currency: currency,
                 accountAmount: accountAmount,
                 toAccountAmount: toAccountAmount,
+                feeTransferId: feeTransferId,
+                feeDeletedWithTransferAt: feeDeletedWithTransferAt,
                 categoryId: categoryId,
                 accountId: accountId,
                 toAccountId: toAccountId,

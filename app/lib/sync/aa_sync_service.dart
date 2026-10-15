@@ -321,7 +321,8 @@ class AaSyncService {
       var valid = bill.currency == 'CNY' &&
           source?.currency == 'CNY' &&
           bill.amount >= 0 &&
-          bill.accountAmount == bill.amount;
+          bill.accountAmount == bill.amount &&
+          !await _db.hasTransferFeeAssociation(bill.id);
       if (bill.type == 2 &&
           bill.aaGroupId == null &&
           bill.settlementId != null) {

@@ -333,7 +333,7 @@ void main() {
         final userVersion = await first
             .customSelect('PRAGMA user_version')
             .getSingle();
-        expect(userVersion.read<int>('user_version'), 5);
+        expect(userVersion.read<int>('user_version'), 6);
         // Also detect the v1 → latest / v2 → latest status_note branch error.
         await first.getAllAaGroups();
         await first.getAllSettlements();
@@ -450,7 +450,7 @@ END
       final userVersion = await retry
           .customSelect('PRAGMA user_version')
           .getSingle();
-      expect(userVersion.read<int>('user_version'), 5);
+      expect(userVersion.read<int>('user_version'), 6);
     } finally {
       await retry.close();
     }

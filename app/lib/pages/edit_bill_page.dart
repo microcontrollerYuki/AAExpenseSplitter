@@ -1167,6 +1167,11 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     );
   }
 
+  Widget _feeReadOnly(String message) => Scaffold(
+    appBar: AppBar(title: const Text('暂不能编辑')),
+    body: Padding(padding: const EdgeInsets.all(24), child: Text(message)),
+  );
+
   @override
   Widget build(BuildContext context) {
     final allAccounts = ref.watch(accountsProvider).value ?? const <Account>[];
@@ -1179,6 +1184,22 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final isTransfer = _type == 2;
 
     final b = widget.bill;
+    // 手续费专用编辑将在 C-11 接入；旧表单不能拆散转账与费用历史。
+    if (b?.feeTransferId != null || b?.feeDeletedWithTransferAt != null) {
+      return _feeReadOnly('手续费需随转账统一修改，暂未开放编辑');
+    }
+    if (b != null && b.type == 2) {
+      final feeState = ref.watch(transferFeeProvider(b.id));
+      if (feeState.hasError) {
+        return _feeReadOnly('手续费关联读取失败，请返回后重试');
+      }
+      if (!feeState.hasValue || feeState.isLoading) {
+        return _feeReadOnly('正在读取手续费关联，请稍后重试');
+      }
+      if (feeState.value != null) {
+        return _feeReadOnly('手续费需随转账统一修改，暂未开放编辑');
+      }
+    }
     final hasForeignAccount =
         b != null &&
         allAccounts.any(

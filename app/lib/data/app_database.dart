@@ -10,6 +10,10 @@ import 'presets.dart';
 
 part 'app_database.g.dart';
 
+const _transferFeeIndexSql =
+    'CREATE UNIQUE INDEX idx_bills_fee_transfer ON bills (fee_transfer_id) '
+    'WHERE fee_transfer_id IS NOT NULL';
+
 /// 删除确认窗口的完整快照；范围不包含二级源的父级，列表不可修改。
 class CategoryDeletePreview {
   CategoryDeletePreview._({
@@ -98,6 +102,7 @@ class Categories extends Table {
 /// amount 为交易币种最小单位；accountAmount 为账户币种实际收付款最小单位。
 /// 转账 currency 固定为出账币种，amount == accountAmount；
 /// toAccountAmount 为转入账户币种的实际入账额，普通收支为空。AA 协议暂限 CNY。
+@TableIndex.sql(_transferFeeIndexSql)
 class Bills extends Table {
   TextColumn get id => text()();
   IntColumn get type => integer()();
@@ -105,6 +110,10 @@ class Bills extends Table {
   TextColumn get currency => text().withDefault(const Constant('CNY'))();
   IntColumn get accountAmount => integer().withDefault(const Constant(0))();
   IntColumn get toAccountAmount => integer().nullable()();
+  /// Only a fee expense has an owner. Retain the link after cancellation.
+  TextColumn get feeTransferId => text().nullable()();
+  /// Non-null only when this expense was deleted together with its transfer.
+  IntColumn get feeDeletedWithTransferAt => integer().nullable()();
   TextColumn get categoryId => text().nullable()();
   TextColumn get accountId => text()();
   TextColumn get toAccountId => text().nullable()();
@@ -183,7 +192,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase({QueryExecutor? executor}) : super(executor ?? _openConnection());
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -227,6 +236,12 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
       AND source.currency = bills.currency AND target.currency = bills.currency
   )
 ''');
+      }
+      if (from < 6) {
+        await m.addColumn(bills, bills.feeTransferId);
+        await m.addColumn(bills, bills.feeDeletedWithTransferAt);
+        // Old differences never imply a fee. Both new fields remain NULL.
+        await customStatement(_transferFeeIndexSql);
       }
     }),
     beforeOpen: (details) async {
@@ -369,7 +384,42 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
     String? currency,
     int? accountAmount,
     int? toAccountAmount,
+  }) => _writeBill(
+    id: id,
+    type: type,
+    amount: amount,
+    categoryId: categoryId,
+    accountId: accountId,
+    toAccountId: toAccountId,
+    dateMs: dateMs,
+    note: note,
+    createdAt: createdAt,
+    aaGroupId: aaGroupId,
+    settlementId: settlementId,
+    currency: currency,
+    accountAmount: accountAmount,
+    toAccountAmount: toAccountAmount,
+  );
+
+  Future<void> _writeBill({
+    required String id,
+    required int type,
+    required int amount,
+    String? categoryId,
+    required String accountId,
+    String? toAccountId,
+    required int dateMs,
+    String note = '',
+    int? createdAt,
+    String? aaGroupId,
+    String? settlementId,
+    String? currency,
+    int? accountAmount,
+    int? toAccountAmount,
+    bool allowTransferFeeWrite = false,
+    String? feeTransferId,
   }) => transaction(() async {
+    if (!allowTransferFeeWrite) await _checkNoTransferFeeAssociation(id);
     await _checkAaBillNotSettled(id);
     final current = await (select(
       bills,
@@ -508,10 +558,306 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
         isAa: Value(aaGroupId != null),
         aaGroupId: Value(aaGroupId),
         settlementId: Value(settlementId),
+        feeTransferId: feeTransferId == null
+            ? const Value.absent()
+            : Value(feeTransferId),
         createdAt: Value(createdAt ?? current?.createdAt ?? now),
         updatedAt: Value(now),
       ),
     );
+  });
+
+  Future<Bill?> _billById(String id) =>
+      (select(bills)..where((t) => t.id.equals(id))).getSingleOrNull();
+
+  /// Includes a cancelled fee so editing never creates a second expense.
+  Future<Bill?> getTransferFee(String transferId) => (select(
+    bills,
+  )..where((t) => t.feeTransferId.equals(transferId))).getSingleOrNull();
+
+  Stream<Bill?> watchTransferFee(String transferId) => (select(
+    bills,
+  )..where((t) => t.feeTransferId.equals(transferId))).watchSingleOrNull();
+
+  Future<bool> hasTransferFeeAssociation(String id) async {
+    final current = await _billById(id);
+    return current?.feeTransferId != null ||
+        current?.feeDeletedWithTransferAt != null ||
+        await getTransferFee(id) != null;
+  }
+
+  Future<void> _checkNoTransferFeeAssociation(String id) async {
+    if (await hasTransferFeeAssociation(id)) {
+      throw StateError('手续费需随转账统一修改');
+    }
+  }
+
+  Future<(Bill?, Bill?)> _checkTransferFeeSnapshots(
+    String id,
+    Bill? expectedTransfer,
+    Bill? expectedFee,
+  ) async {
+    final transfer = await _billById(id);
+    final fee = await getTransferFee(id);
+    if (transfer != expectedTransfer || fee != expectedFee) {
+      throw StateError('转账或手续费已变更，请返回后重试');
+    }
+    if (transfer?.feeTransferId != null ||
+        transfer?.feeDeletedWithTransferAt != null ||
+        (fee != null && transfer == null)) {
+      throw StateError('转账手续费关联无效');
+    }
+    if (fee != null) {
+      _checkFeeShape(fee);
+      if ((fee.feeDeletedWithTransferAt != null &&
+              fee.feeDeletedWithTransferAt != transfer!.deletedAt) ||
+          (transfer!.deletedAt != null && fee.deletedAt == null)) {
+        throw StateError('转账与手续费删除状态不一致');
+      }
+    }
+    return (transfer, fee);
+  }
+
+  static void _checkFeeShape(Bill fee) {
+    if (fee.feeTransferId == null ||
+        fee.type != 0 ||
+        fee.amount <= 0 ||
+        fee.accountAmount != fee.amount ||
+        fee.currency != _currencyCode(fee.currency) ||
+        fee.toAccountId != null ||
+        fee.toAccountAmount != null ||
+        fee.isAa ||
+        fee.aaGroupId != null ||
+        fee.settlementId != null ||
+        (fee.feeDeletedWithTransferAt != null &&
+            fee.feeDeletedWithTransferAt != fee.deletedAt)) {
+      throw StateError('手续费记录待确认，不能改写');
+    }
+  }
+
+  static void _checkFeeMatchesTransfer(Bill fee, Bill transfer) {
+    _checkFeeShape(fee);
+    if (fee.feeTransferId != transfer.id ||
+        fee.accountId != transfer.accountId ||
+        fee.currency != transfer.currency ||
+        fee.dateMs != transfer.dateMs) {
+      throw StateError('手续费与转账不一致，请核对');
+    }
+  }
+
+  Future<void> _checkFeeTransferParent(
+    Bill transfer, {
+    bool allowMissingIncoming = false,
+  }) async {
+    final source = await getAccount(transfer.accountId);
+    final target = transfer.toAccountId == null
+        ? null
+        : await getAccount(transfer.toAccountId!);
+    if (transfer.type != 2 ||
+        transfer.feeTransferId != null ||
+        transfer.feeDeletedWithTransferAt != null ||
+        transfer.isAa ||
+        transfer.aaGroupId != null ||
+        transfer.settlementId != null ||
+        source == null ||
+        target == null ||
+        source.id == target.id ||
+        source.type < 0 ||
+        source.type > 3 ||
+        target.type < 0 ||
+        target.type > 3 ||
+        source.id == kAaCreditAccountId ||
+        target.id == kAaCreditAccountId ||
+        transfer.currency != source.currency ||
+        transfer.currency != _currencyCode(transfer.currency) ||
+        target.currency != _currencyCode(target.currency) ||
+        transfer.amount < 0 ||
+        transfer.amount != transfer.accountAmount) {
+      throw StateError('仅正常真实账户转账可维护手续费');
+    }
+    final incoming = transfer.toAccountAmount;
+    if (incoming == null && allowMissingIncoming) return;
+    if (incoming == null ||
+        (source.currency == target.currency
+            ? incoming != transfer.amount
+            : incoming <= 0 || transfer.amount <= 0)) {
+      throw StateError('转账入账金额待确认');
+    }
+  }
+
+  /// The principal and its one linked expense are committed or rolled back
+  /// together. NULL snapshots mean the corresponding row must not exist.
+  Future<void> saveTransferWithFee({
+    required String id,
+    required int amount,
+    required int toAccountAmount,
+    required int dateMs,
+    String note = '',
+    required int feeAmount,
+    String? feeCategoryId,
+    required Account expectedSource,
+    required Account expectedTarget,
+    Bill? expectedTransfer,
+    Bill? expectedFee,
+  }) => transaction(() async {
+    final (transfer, fee) = await _checkTransferFeeSnapshots(
+      id,
+      expectedTransfer,
+      expectedFee,
+    );
+    if (transfer != null) {
+      if (transfer.deletedAt != null) throw StateError('转账已删除');
+      await _checkFeeTransferParent(
+        transfer,
+        allowMissingIncoming: fee == null,
+      );
+    }
+    if (fee != null && fee.deletedAt == null) {
+      _checkFeeMatchesTransfer(fee, transfer!);
+    }
+    final source = await getAccount(expectedSource.id);
+    final target = await getAccount(expectedTarget.id);
+    if (source != expectedSource ||
+        target != expectedTarget ||
+        source == null ||
+        target == null ||
+        source.id == target.id ||
+        source.type < 0 ||
+        source.type > 3 ||
+        target.type < 0 ||
+        target.type > 3 ||
+        source.id == kAaCreditAccountId ||
+        target.id == kAaCreditAccountId) {
+      throw StateError('转账账户已变化，请重新确认');
+    }
+    if (feeAmount < 0 || (feeAmount > 0 && amount <= 0)) {
+      throw StateError('手续费必须非负，且转账本金须大于零');
+    }
+    if (feeAmount > 0 && feeCategoryId != null) {
+      final category = await (select(
+        categories,
+      )..where((t) => t.id.equals(feeCategoryId))).getSingleOrNull();
+      if (category == null || category.kind != 0) {
+        throw StateError('请选择有效支出分类或未分类作为手续费分类');
+      }
+    }
+    final feeId = fee?.id ?? 'transfer_fee:$id';
+    if (feeAmount > 0 && fee == null && await _billById(feeId) != null) {
+      throw StateError('手续费编号已存在，不能覆盖其他账单');
+    }
+    await _writeBill(
+      id: id,
+      type: 2,
+      amount: amount,
+      accountAmount: amount,
+      toAccountAmount: toAccountAmount,
+      currency: source.currency,
+      categoryId: transfer?.categoryId,
+      accountId: source.id,
+      toAccountId: target.id,
+      dateMs: dateMs,
+      note: note,
+      allowTransferFeeWrite: true,
+    );
+    if (feeAmount == 0) {
+      // Cancelled rows retain their original fields and explicit owner.
+      if (fee != null && fee.deletedAt == null) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        await (update(bills)..where((t) => t.id.equals(fee.id))).write(
+          BillsCompanion(
+            deletedAt: Value(now),
+            updatedAt: Value(now),
+            feeDeletedWithTransferAt: const Value<int?>(null),
+          ),
+        );
+      }
+      return;
+    }
+    await _writeBill(
+      id: feeId,
+      type: 0,
+      amount: feeAmount,
+      accountAmount: feeAmount,
+      currency: source.currency,
+      accountId: source.id,
+      categoryId: feeCategoryId,
+      dateMs: dateMs,
+      note: note.isEmpty ? '转账手续费' : '$note · 转账手续费',
+      allowTransferFeeWrite: true,
+      feeTransferId: id,
+    );
+    await (update(bills)..where((t) => t.id.equals(feeId))).write(
+      BillsCompanion(
+        feeTransferId: Value(id),
+        deletedAt: const Value<int?>(null),
+        feeDeletedWithTransferAt: const Value<int?>(null),
+      ),
+    );
+  });
+
+  Future<void> softDeleteTransferWithFee({
+    required Bill expectedTransfer,
+    required Bill? expectedFee,
+  }) => transaction(() async {
+    final (parent, fee) = await _checkTransferFeeSnapshots(
+      expectedTransfer.id,
+      expectedTransfer,
+      expectedFee,
+    );
+    final transfer = parent!;
+    await _checkFeeTransferParent(transfer, allowMissingIncoming: fee == null);
+    if (transfer.deletedAt != null) return;
+    if (fee != null && fee.deletedAt == null) {
+      _checkFeeMatchesTransfer(fee, transfer);
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await (update(bills)..where((t) => t.id.equals(transfer.id))).write(
+      BillsCompanion(deletedAt: Value(now), updatedAt: Value(now)),
+    );
+    if (fee != null && fee.deletedAt == null) {
+      await (update(bills)..where((t) => t.id.equals(fee.id))).write(
+        BillsCompanion(
+          deletedAt: Value(now),
+          updatedAt: Value(now),
+          feeDeletedWithTransferAt: Value(now),
+        ),
+      );
+    }
+  });
+
+  Future<void> restoreTransferWithFee({
+    required Bill expectedTransfer,
+    required Bill? expectedFee,
+  }) => transaction(() async {
+    final (parent, fee) = await _checkTransferFeeSnapshots(
+      expectedTransfer.id,
+      expectedTransfer,
+      expectedFee,
+    );
+    final transfer = parent!;
+    await _checkFeeTransferParent(transfer, allowMissingIncoming: fee == null);
+    if (transfer.deletedAt == null) return;
+    final restoreFee = fee?.feeDeletedWithTransferAt != null;
+    if (fee != null &&
+        (fee.deletedAt == null ||
+            (restoreFee &&
+                fee.feeDeletedWithTransferAt != transfer.deletedAt))) {
+      throw StateError('转账与手续费删除状态不一致');
+    }
+    if (restoreFee) _checkFeeMatchesTransfer(fee!, transfer);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await (update(bills)..where((t) => t.id.equals(transfer.id))).write(
+      BillsCompanion(deletedAt: const Value<int?>(null), updatedAt: Value(now)),
+    );
+    if (restoreFee) {
+      await (update(bills)..where((t) => t.id.equals(fee!.id))).write(
+        BillsCompanion(
+          deletedAt: const Value<int?>(null),
+          updatedAt: Value(now),
+          feeDeletedWithTransferAt: const Value<int?>(null),
+        ),
+      );
+    }
   });
 
   static String _currencyCode(String code) {
@@ -533,6 +879,7 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
 
   Future<void> linkBillToAaGroup(String billId, String groupId) =>
       transaction(() async {
+        await _checkNoTransferFeeAssociation(billId);
         await _checkAaBillNotSettled(billId);
         final bill = await (select(
           bills,
@@ -563,6 +910,7 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
     required String accountId,
     required String note,
   }) => transaction(() async {
+    if (await hasTransferFeeAssociation(billId)) return false;
     if (accountId == kAaCreditAccountId) return false;
     final account = await (select(
       accounts,
@@ -598,6 +946,7 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
   });
 
   Future<void> softDeleteBill(String id) => transaction(() async {
+        await _checkNoTransferFeeAssociation(id);
         await _checkAaBillNotSettled(id);
         await (update(bills)..where((t) => t.id.equals(id))).write(
             BillsCompanion(
@@ -605,9 +954,11 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
       });
 
   /// 撤销软删除（回收站/左滑撤销用）
-  Future<void> restoreBill(String id) =>
-      (update(bills)..where((t) => t.id.equals(id)))
-          .write(BillsCompanion(deletedAt: Value<int?>(null)));
+  Future<void> restoreBill(String id) => transaction(() async {
+        await _checkNoTransferFeeAssociation(id);
+        await (update(bills)..where((t) => t.id.equals(id)))
+            .write(BillsCompanion(deletedAt: const Value<int?>(null)));
+      });
 
   /// 查重：同交易币种、同类型、同原币金额、同一自然日的未删除账单。
   /// 旧调用默认人民币；账户实际额不用于跨币账单查重。
@@ -751,6 +1102,7 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
   /// 取消 AA 标记：关联账单转普通账单（isAa/aaGroupId 清空）
   Future<void> unlinkBillFromAaGroup(String billId) =>
       transaction(() async {
+        await _checkNoTransferFeeAssociation(billId);
         await _checkAaBillNotSettled(billId);
         await (update(bills)..where((t) => t.id.equals(billId))).write(
           BillsCompanion(
@@ -773,7 +1125,8 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
         final account = await getAccount(b.accountId);
         // Do not let malformed historical associations block opening the app
         // or overwrite a foreign amount through a CNY-only repair helper.
-        if ((b.type != 0 && b.type != 1) ||
+        if (await hasTransferFeeAssociation(b.id) ||
+            (b.type != 0 && b.type != 1) ||
             b.settlementId != null ||
             b.currency != 'CNY' ||
             account?.currency != 'CNY' ||
@@ -856,6 +1209,7 @@ WHERE type = 2 AND amount >= 0 AND amount = account_amount
 
   Future<void> _updateCnyBillAmount(String billId, int amount, {int? dateMs}) =>
       transaction(() async {
+        await _checkNoTransferFeeAssociation(billId);
         await _checkAaBillNotSettled(billId);
         final bill = await (select(
           bills,

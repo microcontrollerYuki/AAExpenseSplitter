@@ -393,7 +393,18 @@ class _BillTileState extends ConsumerState<_BillTile> {
       ),
     );
 
-    if (bill.aaGroupId != null) return tile;
+    final feeState = isTransfer
+        ? ref.watch(transferFeeProvider(bill.id))
+        : null;
+    final feeReadOnly =
+        bill.feeTransferId != null ||
+        bill.feeDeletedWithTransferAt != null ||
+        (feeState != null &&
+            (!feeState.hasValue ||
+                feeState.isLoading ||
+                feeState.hasError ||
+                feeState.value != null));
+    if (bill.aaGroupId != null || feeReadOnly) return tile;
 
     return ClipRect(
       child: Stack(
