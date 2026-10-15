@@ -996,8 +996,22 @@ void main() {
     );
     expect(balances['acc_cash'], BigInt.zero);
     expect(balances['usd'], BigInt.zero);
-    await db.restoreBill(before.id);
-    expect((await db.getAllBills()).single.toJson(), before.toJson());
+    final deleted = await (db.select(
+      db.bills,
+    )..where((row) => row.id.equals(before.id))).getSingle();
+    expect(deleted.deletedAt, isNotNull);
+    expect(deleted.updatedAt, greaterThanOrEqualTo(before.updatedAt));
+    await db.restoreTransferWithFee(
+      expectedTransfer: deleted,
+      expectedFee: null,
+    );
+    final restored = (await db.getAllBills()).single;
+    expect(restored.updatedAt, greaterThanOrEqualTo(deleted.updatedAt));
+    // 专用删除 / 恢复记录更新时间，其余全部字段与原交易保持一致。
+    expect(restored.toJson(), {
+      ...before.toJson(),
+      'updatedAt': restored.updatedAt,
+    });
     await _expectTransfer(
       db,
       currency: Currency.cny,

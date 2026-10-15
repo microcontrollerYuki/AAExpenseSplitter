@@ -15,6 +15,7 @@ import '../utils/bill_money.dart';
 import '../utils/currency.dart';
 import '../utils/money.dart';
 import '../utils/money_expression.dart';
+import '../utils/transfer_fee.dart';
 import '../widgets/category_picker.dart';
 import '../widgets/currency_picker.dart';
 import '../widgets/number_pad.dart';
@@ -51,6 +52,50 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   String? _receivedSignature;
   bool _originalReceived = false;
   bool _requireReceivedConfirmation = false;
+  bool _feeLoaded = false;
+  Bill? _feeSnapshot;
+  int _feeAmount = 0;
+  String? _feeCategoryId;
+  String? _feeSourceSignature;
+  Currency _feeCurrency = Currency.cny;
+
+  String _feeSignature(Account source) => '${source.id}|${source.currency}';
+
+  bool _feeConfirmed(Account source) =>
+      _feeAmount == 0 || _feeSourceSignature == _feeSignature(source);
+
+  Future<void> _pickTransferFee(Account source) async {
+    final currency = Currency.tryFromCode(source.currency)!;
+    final signature = _feeSignature(source);
+    final draft = await _showTransferFeeDialog(
+      context,
+      currency: currency,
+      amount: _feeCurrency == currency ? _feeAmount : 0,
+      categoryId: _feeCategoryId,
+      categories: ref.read(categoriesProvider).value ?? const <Category>[],
+      previous: !_feeConfirmed(source)
+          ? '出账账户已变化，请重新确认。原手续费 ${_feeCurrency.code} ${formatMinorUnits(_feeAmount, _feeCurrency, grouping: false)}'
+          : null,
+    );
+    if (draft == null || !mounted || _type != 2) return;
+    final current = ref
+        .read(accountsProvider)
+        .value
+        ?.where((a) => a.id == _accountId)
+        .firstOrNull;
+    if (current == null ||
+        current != source ||
+        signature != _feeSignature(current)) {
+      _snack('出账账户已变化，请重新确认手续费');
+      return;
+    }
+    setState(() {
+      _feeAmount = draft.amount;
+      _feeCategoryId = draft.categoryId;
+      _feeCurrency = currency;
+      _feeSourceSignature = signature;
+    });
+  }
 
   bool get _aaRestricted => _aaOn || widget.bill?.aaGroupId != null;
 
@@ -484,7 +529,16 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       if (account.currency == target.currency && incoming != cents) {
         return _snack('同币种转账的出账与入账金额必须一致');
       }
+      if (!_feeConfirmed(account)) return _snack('请重新确认手续费');
+      if (_feeAmount > 0 &&
+          _feeCategoryId != null &&
+          !categories.any((c) => c.id == _feeCategoryId && c.kind == 0)) {
+        return _snack('手续费分类已变化，请重新选择');
+      }
     }
+    final feeSnapshot = _feeSnapshot;
+    final feeAmount = _feeAmount;
+    final feeCategoryId = _feeCategoryId;
 
     // 防重复入账：已存在相似账单（同类型 · 同金额 · 同一天）时需用户确认
     final similar = await db.findSimilarBills(
@@ -543,6 +597,46 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           if (current != original) {
             throw StateError('账单已变化，请返回重新打开');
           }
+        }
+        if (_type == 2) {
+          var transferSnapshot = original;
+          // 普通旧账改为转账仍在同一事务内；后续附费失败会回滚转换。
+          if (original != null && original.type != 2) {
+            if (feeSnapshot != null ||
+                await db.hasTransferFeeAssociation(original.id)) {
+              throw StateError('账单手续费关联已变化，请返回重试');
+            }
+            await db.upsertBill(
+              id: billId,
+              type: 2,
+              amount: cents,
+              currency: account.currency,
+              accountAmount: cents,
+              accountId: accId,
+              toAccountId: toId,
+              toAccountAmount: incoming,
+              dateMs: _date.millisecondsSinceEpoch,
+              note: _noteCtl.text.trim(),
+              createdAt: original.createdAt,
+            );
+            transferSnapshot = await (db.select(
+              db.bills,
+            )..where((t) => t.id.equals(billId))).getSingle();
+          }
+          await db.saveTransferWithFee(
+            id: billId,
+            amount: cents,
+            toAccountAmount: incoming!,
+            dateMs: _date.millisecondsSinceEpoch,
+            note: _noteCtl.text.trim(),
+            feeAmount: feeAmount,
+            feeCategoryId: feeCategoryId,
+            expectedSource: account,
+            expectedTarget: selectedTarget!,
+            expectedTransfer: transferSnapshot,
+            expectedFee: feeSnapshot,
+          );
+          return;
         }
         await db.upsertBill(
           id: billId,
@@ -632,6 +726,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         _invalidateActual();
         _requireReceivedConfirmation = false;
         _noteCtl.clear();
+        _feeAmount = 0;
+        _feeCategoryId = null;
+        _feeSourceSignature = null;
       });
       _snack('已保存，继续记下一笔');
     } else {
@@ -697,7 +794,15 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     );
     if (ok == true) {
       try {
-        await ref.read(databaseProvider).softDeleteBill(b.id);
+        final db = ref.read(databaseProvider);
+        if (b.type == 2) {
+          await db.softDeleteTransferWithFee(
+            expectedTransfer: b,
+            expectedFee: _feeSnapshot,
+          );
+        } else {
+          await db.softDeleteBill(b.id);
+        }
         if (mounted && ModalRoute.of(context)?.isCurrent == true) {
           Navigator.of(context).pop();
         }
@@ -1082,7 +1187,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
         if (_toAccountId != picked) _invalidateActual();
         _toAccountId = picked;
       } else {
-        if (_accountId != picked) _invalidateActual();
+        if (_accountId != picked) {
+          _invalidateActual();
+          if (_feeAmount > 0) _feeSourceSignature = null;
+        }
         _accountId = picked;
       }
     });
@@ -1184,9 +1292,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     final isTransfer = _type == 2;
 
     final b = widget.bill;
-    // 手续费专用编辑将在 C-11 接入；旧表单不能拆散转账与费用历史。
+    // 手续费子账只读，父转账通过专用事务维护本金与费用历史。
     if (b?.feeTransferId != null || b?.feeDeletedWithTransferAt != null) {
-      return _feeReadOnly('手续费需随转账统一修改，暂未开放编辑');
+      return _feeReadOnly('手续费需随转账统一修改');
     }
     if (b != null && b.type == 2) {
       final feeState = ref.watch(transferFeeProvider(b.id));
@@ -1196,8 +1304,21 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       if (!feeState.hasValue || feeState.isLoading) {
         return _feeReadOnly('正在读取手续费关联，请稍后重试');
       }
-      if (feeState.value != null) {
-        return _feeReadOnly('手续费需随转账统一修改，暂未开放编辑');
+      if (!_feeLoaded) {
+        _feeLoaded = true;
+        _feeSnapshot = feeState.value;
+        final fee = _feeSnapshot;
+        _feeAmount = fee != null && fee.deletedAt == null ? fee.amount : 0;
+        _feeCategoryId = fee?.categoryId;
+        _feeCurrency = Currency.tryFromCode(b.currency) ?? Currency.cny;
+        _feeSourceSignature = '${b.accountId}|${b.currency}';
+      }
+      // 固定首次快照；流刷新不能用后台新费用替换尚未保存的草稿。
+      if (_feeSnapshot != null &&
+          !canManageTransferFee(b, _feeSnapshot, {
+            for (final account in allAccounts) account.id: account,
+          })) {
+        return _feeReadOnly('该转账的手续费关联尚不能安全编辑，请返回核对');
       }
     }
     final hasForeignAccount =
@@ -1301,6 +1422,7 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       final sourceCurrency = Currency.tryFromCode(selAcc.currency)!;
       if (_currency != sourceCurrency) {
         _invalidateActual();
+        if (_feeAmount > 0) _feeSourceSignature = null;
         _currency = sourceCurrency;
       }
       final originalTarget = allAccounts
@@ -1706,10 +1828,34 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           ),
         ),
         const SizedBox(height: 8),
+        OutlinedButton(
+          key: const ValueKey('transfer-fee-button'),
+          onPressed: source == null ? null : () => _pickTransferFee(source),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              source != null && !_feeConfirmed(source)
+                  ? '手续费待确认（原 ${_feeCurrency.code} ${formatMinorUnits(_feeAmount, _feeCurrency, grouping: false)}）'
+                  : '手续费 ${source?.currency ?? _currency.code} ${formatMinorUnits(_feeAmount, source == null ? _currency : Currency.tryFromCode(source.currency)!, grouping: false)}',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '总扣款 ${source == null || !_feeConfirmed(source) || evaluateMoneyExpression(_amount, _currency) == null || _hasOperator ? '待确认' : displayCurrencyAmount(BigInt.from(units) + BigInt.from(_feeAmount), source.currency)}',
+          key: const ValueKey('transfer-total-debit'),
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        if (_feeAmount > 0 && source != null && _feeConfirmed(source))
+          Text(
+            '手续费分类：${CategoryHierarchy(ref.read(categoriesProvider).value ?? const <Category>[]).pathOf(_feeCategoryId)}',
+          ),
+        const SizedBox(height: 8),
         Text(
           source?.currency == target?.currency
-              ? '同币种出入金额相等；手续费请单独记支出。'
-              : '分别确认两侧实际金额，不自动换算汇率。',
+              ? '同币种本金出入相等；手续费另从转出账户扣除。'
+              : '分别确认两侧本金；手续费另从转出账户扣除。',
         ),
       ],
     );
@@ -1726,6 +1872,10 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
           return;
         }
         if (_type == t || _saving) return;
+        if (t != 2 && (_feeSnapshot != null || _feeAmount > 0)) {
+          _snack(_feeSnapshot != null ? '含手续费历史的转账不能改为收支' : '请先将手续费设为零，再切换收支');
+          return;
+        }
         setState(() {
           _invalidateActual();
           _type = t;
@@ -1852,6 +2002,169 @@ class _AaLockedView extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<({int amount, String? categoryId})?> _showTransferFeeDialog(
+  BuildContext context, {
+  required Currency currency,
+  required int amount,
+  required String? categoryId,
+  required List<Category> categories,
+  String? previous,
+}) => showDialog<({int amount, String? categoryId})>(
+  context: context,
+  builder: (_) => _TransferFeeDialog(
+    currency: currency,
+    amount: amount,
+    categoryId: categoryId,
+    categories: categories,
+    previous: previous,
+  ),
+);
+
+class _TransferFeeDialog extends StatefulWidget {
+  const _TransferFeeDialog({
+    required this.currency,
+    required this.amount,
+    required this.categoryId,
+    required this.categories,
+    this.previous,
+  });
+  final Currency currency;
+  final int amount;
+  final String? categoryId;
+  final List<Category> categories;
+  final String? previous;
+
+  @override
+  State<_TransferFeeDialog> createState() => _TransferFeeDialogState();
+}
+
+class _TransferFeeDialogState extends State<_TransferFeeDialog> {
+  late final _controller = TextEditingController(
+    text: formatMinorUnits(widget.amount, widget.currency, grouping: false),
+  );
+  late String? _categoryId = widget.categoryId;
+  String? _error;
+  bool _closed = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _confirm() {
+    if (_closed) return;
+    final amount = parseMoneyToMinorUnits(_controller.text, widget.currency);
+    if (amount == null || amount < 0) {
+      setState(
+        () => _error = widget.currency.minorUnitDigits == 0
+            ? '请输入非负整数手续费'
+            : '请输入非负且不超过两位小数的手续费',
+      );
+      return;
+    }
+    _closed = true;
+    Navigator.pop(context, (amount: amount, categoryId: _categoryId));
+  }
+
+  void _cancel() {
+    if (_closed) return;
+    _closed = true;
+    Navigator.pop(context);
+  }
+
+  Future<void> _pickCategory() async {
+    FocusScope.of(context).unfocus();
+    var selected = _categoryId;
+    var closed = false;
+    final picked = await showDialog<({String? id})>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, change) {
+          void finish(({String? id})? value) {
+            if (closed) return;
+            closed = true;
+            Navigator.pop(dialogContext, value);
+          }
+
+          return AlertDialog(
+            title: const Text('手续费分类'),
+            content: SizedBox(
+              width: 440,
+              height: MediaQuery.sizeOf(context).height * 0.4,
+              child: CategoryPicker(
+                categories: widget.categories,
+                kind: 0,
+                selectedId: selected,
+                fallbackToRoot: false,
+                onSelected: (id) => change(() => selected = id),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => finish((id: null)),
+                child: const Text('未分类'),
+              ),
+              TextButton(
+                onPressed: () => finish(null),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => finish((id: selected)),
+                child: const Text('确认'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    if (picked != null && mounted) setState(() => _categoryId = picked.id);
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
+    title: const Text('转账手续费'),
+    content: SizedBox(
+      width: 420,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (widget.previous != null) Text(widget.previous!),
+          TextField(
+            key: const ValueKey('transfer-fee-input'),
+            controller: _controller,
+            autofocus: true,
+            maxLength: 256,
+            keyboardType: TextInputType.numberWithOptions(
+              decimal: widget.currency.minorUnitDigits > 0,
+            ),
+            decoration: InputDecoration(
+              labelText: '${widget.currency.code} 手续费',
+              helperText: '0 表示不收取或取消手续费',
+              errorText: _error,
+            ),
+            onSubmitted: (_) => _confirm(),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton(
+            key: const ValueKey('transfer-fee-category'),
+            onPressed: _pickCategory,
+            child: Text(
+              '分类：${CategoryHierarchy(widget.categories).pathOf(_categoryId)}',
+            ),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(onPressed: _cancel, child: const Text('取消')),
+      FilledButton(onPressed: _confirm, child: const Text('确认')),
+    ],
+  );
 }
 
 Future<int?> _showActualAmountDialog(

@@ -7,6 +7,7 @@ import '../providers.dart';
 import '../theme.dart';
 import '../utils/balance.dart';
 import '../utils/bill_money.dart';
+import '../utils/transfer_fee.dart';
 import 'edit_bill_page.dart';
 
 /// Shared entry point for bills, account activity and future report details.
@@ -65,7 +66,8 @@ class BillDetailPage extends ConsumerWidget {
     }
     // 展示和再次编辑使用同一份最新记录，构造参数只提供稳定 ID。
     final bill = latest;
-    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    final accountState = ref.watch(accountsProvider);
+    final accounts = accountState.value ?? const <Account>[];
     final categories =
         ref.watch(categoriesProvider).value ?? const <Category>[];
 
@@ -91,14 +93,30 @@ class BillDetailPage extends ConsumerWidget {
     final feeState = bill.type == 2
         ? ref.watch(transferFeeProvider(bill.id))
         : null;
+    final feeReady =
+        feeState != null &&
+        !billState.isLoading &&
+        feeState.hasValue &&
+        !feeState.isLoading &&
+        !feeState.hasError &&
+        accountState.hasValue &&
+        !accountState.isLoading &&
+        !accountState.hasError;
+    final feeManageable =
+        feeReady &&
+        canManageTransferFee(bill, feeState.value, {
+          for (final account in accounts) account.id: account,
+        });
+    // 旧 AA / 结算转账继续进入原有锁定详情，不能开放费用维护。
+    final legacyLockedTransfer =
+        bill.type == 2 &&
+        feeReady &&
+        feeState.value == null &&
+        (isAa || isSettlement);
     final feeReadOnly =
         bill.feeTransferId != null ||
         bill.feeDeletedWithTransferAt != null ||
-        (feeState != null &&
-            (!feeState.hasValue ||
-                feeState.isLoading ||
-                feeState.hasError ||
-                feeState.value != null));
+        (bill.type == 2 && !feeManageable && !legacyLockedTransfer);
 
     return _frame(
       context,
@@ -128,13 +146,15 @@ class BillDetailPage extends ConsumerWidget {
               toAcc,
               isAa,
               isSettlement,
+              feeState?.value,
+              feeManageable,
             ),
             if (bill.feeTransferId != null ||
                 bill.feeDeletedWithTransferAt != null ||
-                feeState?.value != null)
+                (bill.type == 2 && feeReady && !feeManageable))
               const Padding(
                 padding: EdgeInsets.only(top: 12),
-                child: Text('手续费需随转账统一修改，暂未开放编辑'),
+                child: Text('手续费需随转账统一修改'),
               ),
           ],
         ),
@@ -259,6 +279,8 @@ class BillDetailPage extends ConsumerWidget {
     Account? toAcc,
     bool isAa,
     bool isSettlement,
+    Bill? fee,
+    bool feeManageable,
   ) {
     final d = DateTime.fromMillisecondsSinceEpoch(bill.dateMs);
     String two(int v) => v.toString().padLeft(2, '0');
@@ -266,6 +288,7 @@ class BillDetailPage extends ConsumerWidget {
       for (final account in [acc, toAcc].whereType<Account>())
         account.id: account,
     });
+    final feeAmount = fee?.deletedAt == null ? fee?.amount ?? 0 : 0;
 
     final rows = <Widget>[
       _row('交易币种', bill.currency.trim().isEmpty ? '未知币种' : bill.currency),
@@ -287,6 +310,21 @@ class BillDetailPage extends ConsumerWidget {
           incoming == null
               ? '待确认（缺少有效入账金额）'
               : displayCurrencyAmount(BigInt.from(incoming), toAcc!.currency),
+        ),
+        _row(
+          '手续费',
+          !feeManageable
+              ? '待确认（手续费关联或账户未就绪）'
+              : '${displayCurrencyAmount(BigInt.from(feeAmount), bill.currency)}${fee?.deletedAt != null ? '（已取消）' : ''}',
+        ),
+        _row(
+          '总扣款',
+          !feeManageable
+              ? '待确认'
+              : displayCurrencyAmount(
+                  BigInt.from(bill.accountAmount) + BigInt.from(feeAmount),
+                  bill.currency,
+                ),
         ),
       ] else if (acc == null ||
           acc.currency != bill.currency ||

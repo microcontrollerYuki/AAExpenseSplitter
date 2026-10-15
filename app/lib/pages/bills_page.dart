@@ -9,6 +9,7 @@ import '../utils/balance.dart';
 import '../utils/bill_money.dart';
 import '../utils/money.dart';
 import '../utils/report.dart';
+import '../utils/transfer_fee.dart';
 import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
 import 'accounts_page.dart';
@@ -261,12 +262,28 @@ class _BillTileState extends ConsumerState<_BillTile> {
   static const double _reveal = 76;
   double _dx = 0;
 
-  Future<void> _delete() async {
+  Future<void> _delete(Bill bill, Bill? fee) async {
     final db = ref.read(databaseProvider);
     final messenger = ScaffoldMessenger.of(context);
-    final billId = widget.bill.id;
+    Bill? deletedTransfer;
+    Bill? deletedFee;
     try {
-      await db.softDeleteBill(billId);
+      if (bill.type == 2) {
+        // Hold the post-delete snapshots in the same transaction. Undo must
+        // never adopt another writer's changes as its expected state.
+        await db.transaction(() async {
+          await db.softDeleteTransferWithFee(
+            expectedTransfer: bill,
+            expectedFee: fee,
+          );
+          deletedTransfer = await (db.select(
+            db.bills,
+          )..where((row) => row.id.equals(bill.id))).getSingle();
+          deletedFee = await db.getTransferFee(bill.id);
+        });
+      } else {
+        await db.softDeleteBill(bill.id);
+      }
     } on StateError catch (error) {
       if (messenger.mounted) {
         messenger.showSnackBar(SnackBar(content: Text(error.message)));
@@ -276,10 +293,29 @@ class _BillTileState extends ConsumerState<_BillTile> {
     if (!messenger.mounted) return;
     messenger.showSnackBar(
       SnackBar(
-        content: const Text('已删除 1 笔账单'),
+        content: Text(
+          bill.type == 2 && fee != null && fee.deletedAt == null
+              ? '已删除转账及手续费'
+              : '已删除 1 笔账单',
+        ),
         action: SnackBarAction(
           label: '撤销',
-          onPressed: () => db.restoreBill(billId),
+          onPressed: () async {
+            try {
+              if (deletedTransfer != null) {
+                await db.restoreTransferWithFee(
+                  expectedTransfer: deletedTransfer!,
+                  expectedFee: deletedFee,
+                );
+              } else {
+                await db.restoreBill(bill.id);
+              }
+            } on StateError catch (error) {
+              if (messenger.mounted) {
+                messenger.showSnackBar(SnackBar(content: Text(error.message)));
+              }
+            }
+          },
         ),
       ),
     );
@@ -396,14 +432,24 @@ class _BillTileState extends ConsumerState<_BillTile> {
     final feeState = isTransfer
         ? ref.watch(transferFeeProvider(bill.id))
         : null;
+    final accountState = ref.watch(accountsProvider);
+    final billsState = ref.watch(monthBillsProvider);
+    final feeManageable =
+        feeState != null &&
+        billsState.hasValue &&
+        !billsState.isLoading &&
+        !billsState.hasError &&
+        feeState.hasValue &&
+        !feeState.isLoading &&
+        !feeState.hasError &&
+        accountState.hasValue &&
+        !accountState.isLoading &&
+        !accountState.hasError &&
+        canManageTransferFee(bill, feeState.value, widget.accBy);
     final feeReadOnly =
         bill.feeTransferId != null ||
         bill.feeDeletedWithTransferAt != null ||
-        (feeState != null &&
-            (!feeState.hasValue ||
-                feeState.isLoading ||
-                feeState.hasError ||
-                feeState.value != null));
+        (isTransfer && !feeManageable);
     if (bill.aaGroupId != null || feeReadOnly) return tile;
 
     return ClipRect(
@@ -419,7 +465,7 @@ class _BillTileState extends ConsumerState<_BillTile> {
                 icon: const Icon(Icons.delete_outline, color: Colors.white),
                 onPressed: () {
                   setState(() => _dx = 0);
-                  _delete();
+                  _delete(bill, feeState?.value);
                 },
               ),
             ),

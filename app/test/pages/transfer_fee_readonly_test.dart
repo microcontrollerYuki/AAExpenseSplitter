@@ -14,7 +14,7 @@ import 'package:aa_expense_splitter/widgets/number_pad.dart';
 
 import '../helpers/test_support.dart';
 
-const _lockedMessage = '手续费需随转账统一修改，暂未开放编辑';
+const _lockedMessage = '手续费需随转账统一修改';
 
 Finder _detailText(String text) =>
     find.descendant(of: find.byType(BillDetailPage), matching: find.text(text));
@@ -105,7 +105,7 @@ void main() {
 
     await tester.drag(find.text('关联手续费'), const Offset(-120, 0));
     await settleProviders(tester);
-    expect(find.byTooltip('删除'), findsNothing);
+    expect(find.byTooltip('删除').hitTestable(), findsNothing);
     await _openDetail(tester, '关联手续费');
     expect(_detailText('-¥ 1.25'), findsOneWidget);
     expect(_detailText('修改'), findsNothing);
@@ -120,7 +120,7 @@ void main() {
     await disposePage(tester, db);
   });
 
-  testWidgets('父转账有活动或已取消手续费历史均只读，原本金详情仍可查看', (tester) async {
+  testWidgets('父转账有活动或已取消手续费历史可统一编辑，保留本金详情与滑删入口', (tester) async {
     for (final cancelled in [false, true]) {
       final db = TestAppDatabase();
       final fixture = await _seed(db, cancelled: cancelled);
@@ -129,20 +129,24 @@ void main() {
       if (cancelled) {
         expect(find.text('关联手续费'), findsNothing);
       }
-      await tester.drag(find.text('转账'), const Offset(-120, 0));
-      await settleProviders(tester);
-      expect(find.byTooltip('删除'), findsNothing);
       await _openDetail(tester, '转账');
       expect(_detailText('¥ 100.00'), findsWidgets);
       expect(_detailText('转出金额'), findsOneWidget);
       expect(_detailText('转入金额'), findsOneWidget);
-      expect(_detailText('修改'), findsNothing);
-      expect(_detailText(_lockedMessage), findsOneWidget);
+      expect(_detailText('修改').hitTestable(), findsOneWidget);
+      expect(_detailText('手续费'), findsOneWidget);
+      expect(_detailText('总扣款'), findsOneWidget);
+      expect(_detailText(_lockedMessage), findsNothing);
       await _closeDetail(tester);
 
       await _directEdit(tester, fixture.transfer);
-      expect(find.text(_lockedMessage), findsOneWidget);
-      _expectNoEditor();
+      expect(find.text(_lockedMessage), findsNothing);
+      expect(find.byType(NumberPad), findsOneWidget);
+      expect(find.text('保存'), findsOneWidget);
+      await _back(tester);
+      await tester.drag(find.text('转账'), const Offset(-120, 0));
+      await settleProviders(tester);
+      expect(find.byTooltip('删除').hitTestable(), findsOneWidget);
       expect(await db.select(db.bills).get(), before);
       expect(tester.takeException(), isNull);
       await disposePage(tester, db);
