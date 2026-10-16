@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'data/app_database.dart';
+import 'exchange/exchange_rate_service.dart';
 import 'sync/aa_sync_service.dart';
 import 'utils/report_filter.dart';
 
@@ -8,6 +9,14 @@ final databaseProvider = Provider<AppDatabase>((ref) {
   final db = AppDatabase();
   ref.onDispose(db.close);
   return db;
+});
+
+final exchangeRateServiceProvider = Provider<ExchangeRateService>((ref) {
+  final service = ExchangeRateService(
+    store: DatabaseRateStore(ref.watch(databaseProvider)),
+  );
+  ref.onDispose(service.dispose);
+  return service;
 });
 
 final aaSyncServiceProvider = Provider<AaSyncService>(
