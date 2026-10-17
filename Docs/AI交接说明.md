@@ -17,49 +17,59 @@
 | 项目 | 本次交接状态 |
 |---|---|
 | 仓库 / 分支 | `https://github.com/microcontrollerYuki/AAExpenseSplitter.git` / `Glm5.3F`（已合并 `codex/stabilize-aa` 与远端 main） |
-| 最近功能提交 | C-13：`e79d24a409eaa68115889e5c3c9671a75b125dd0`，已推送并核对远端 |
+| 最近功能提交 | R-09：`2ac82b2e75808168fef5080c2d9da08f2489c0a4`，已推送并核对远端 |
 | 版本 / 数据库 | `app/pubspec.yaml` 为 `0.2.0+5000`；Drift / SQLite schema 6 |
-| 总任务 | 65 个唯一编号，29 完成 / 36 待办；C 多币种阶段 13 / 13。数量不是产品完成率 |
-| 最近专项 / 全量 | C-13 专项 108/108；全量 977/977，runner 约 55 秒、命令约 59 秒 |
+| 总任务 | 65 个唯一编号，30 完成 / 35 待办；R 报表阶段 2 / 10。数量不是产品完成率 |
+| 最近专项 / 全量 | R-09 专项 12/12；全量 989/989，runner 约 58 秒、命令约 62 秒 |
 | 分析 | 0 error、27 条原有 warning / info；本轮新增 lint 已处理，不能宣称存量清零 |
-| 设备验收 | 两台既有雷电已安装 C-13，联网预填 / 手动率 / 实际额 / 手续费组合 / 旧账回显 / 冒烟通过，业务六表指纹与基线一致；设备级断网操作遗留（雷电 WLAN 与 adbd 联动断开，详见开发进度 C-13 限制段） |
-| 当前下一项 | **R-09 同一汇率快照逐笔折算 CNY** |
+| 设备验收 | 两台既有雷电已安装 R-09（模型层，行为不变），原币报表及余额回归与之前完全一致，业务六表指纹与基线一致；C-13 的设备级断网操作仍遗留（雷电 WLAN 与 adbd 联动断开，详见开发进度限制段） |
+| 当前下一项 | **R-10 明细月摘要 / 图表默认总收支** |
 
 本次交接文档同时同步 C-12 完成状态。最终文档提交号从 `git log` 读取，不在本文写入自身提交号。上述测试是上一轮已执行的基线，接手后的改动仍须重新验证。
 
-已交付：手动收支、本人转账、六币种账户及实际双额、转账内手续费、两级分类 / 宫格选择 / 迁移 / 删除转移、手选年月、底部账单详情、原币月统计 / 分类 / 六个月趋势、共享汇率设置、转账汇率预填与手动覆盖、图片 OCR 辅助录入、仅 CNY 的双人 AA 与加密文件交换。完整功能 / 限制见 [项目概览](README.md)。
+已交付：手动收支、本人转账、六币种账户及实际双额、转账内手续费、两级分类 / 宫格选择 / 迁移 / 删除转移、手选年月、底部账单详情、原币月统计 / 分类 / 六个月趋势、共享汇率设置、转账汇率预填与手动覆盖、总收支折算模型与全币种选择、图片 OCR 辅助录入、仅 CNY 的双人 AA 与加密文件交换。完整功能 / 限制见 [项目概览](README.md)。
 
-尚未交付：默认折算总收支、年报 / 自定义范围 / 收入独立报表 / 统计明细 / 日历、AA 完整分类路径兼容、无障碍与后台自动入账。预算、CSV、整库备份、回收站仍为占位。现有图片 OCR 和独立测试 App 不代表无障碍已实现；真机、真实支付平台版本、iOS、正式签名发布也未验收。
+尚未交付：折算接入明细 / 图表界面（R-10）、年报 / 自定义范围 / 收入独立报表 / 统计明细 / 日历、AA 完整分类路径兼容、无障碍与后台自动入账。预算、CSV、整库备份、回收站仍为占位。现有图片 OCR 和独立测试 App 不代表无障碍已实现；真机、真实支付平台版本、iOS、正式签名发布也未验收。
 
 ## 接手时先执行
 
 1. 读取本仓库适用的 `AGENTS.md` 等指令（如果存在），检查 `git status --short`、当前分支、`git log -5 --oneline`、`git remote -v`。保存并理解已有修改，不使用强制 reset、清空工作区、强推或丢弃不属于自己的改动。
 2. 按顺序阅读 [项目概览](README.md) → [开发进度](开发进度.md) → [总 TODO](TODO-无障碍自动记账.md) → [测试说明](测试说明.md) → 对应专项计划。当前下一步另读 [多币种与报表计划](下一版本计划-多币种与报表.md) 与 [汇率服务](汇率服务.md)。档案和 [早期设计框架](AA记账-功能设计框架.md) 只作历史参考。
 3. 确认正在修改哪一份 checkout，SDK / 缓存脚本是否指向它，ADB 对应哪两台原实例。不要因为存在 D 盘主目录而切到另一份代码，也不要重建模拟器或清除应用数据。
-4. 选一个 TODO ID，说明本轮范围、受影响数据和正反例。当前应选 R-09；本轮无需同时实施 R-10 或重做 C-13。
+4. 选一个 TODO ID，说明本轮范围、受影响数据和正反例。当前应选 R-10；本轮无需同时实施 R-02 或重做 R-09。
 
 ## 任务顺序与下一小点
 
-按 **R-09 → R-10 → R-02 → R-03 → R-04 → R-05 → R-06 → R-07 → R-08** 逐点交付，保留原编号，不按编号大小改顺序。随后再恢复 P1-05、P0-01 剩余能力探测、P2～P7。全部细项与验收要求保留在总 TODO，不另造一份状态清单。
+按 **R-10 → R-02 → R-03 → R-04 → R-05 → R-06 → R-07 → R-08** 逐点交付，保留原编号，不按编号大小改顺序。随后再恢复 P1-05、P0-01 剩余能力探测、P2～P7。全部细项与验收要求保留在总 TODO，不另造一份状态清单。
 
 **C-13 的实现结果（已完成）：**
 
 - `TransferRatePrefill` 接口（[transfer_rate_prefill.dart](../app/lib/exchange/transfer_rate_prefill.dart)）冻结不可变 `RateQuote` 生成跨币入账候选；弹窗显示方向 / 来源 / 时间 / 手动 / 过期状态，自定义汇率或实际额均为手动输入，采用即显式确认；JPY 只舍入一次。
 - 换账户 / 本金 / 币种后旧确认失效；迟到刷新只更新候选显示；历史转账优先回显已保存双额；离线缺率可人工确认；pumpPage 默认惰性注入，页面测试零网络。同签名内快照转旧不自愈是已知显示限制。
-- 专项入口 [transfer_rate_prefill_test.dart](../app/test/pages/transfer_rate_prefill_test.dart)；设备级断网操作因雷电 WLAN 与 adbd 联动断开而遗留（R-09 如需断网验证，先解决该环境约束）。
+- 专项入口 [transfer_rate_prefill_test.dart](../app/test/pages/transfer_rate_prefill_test.dart)；设备级断网操作因雷电 WLAN 与 adbd 联动断开而遗留（R-10 如需断网验证，先解决该环境约束）。
 - 同时回归 C-11：手续费按来源币种额外支付，来源改变后须重确认，目标入账确认独立维护；汇率预填不绕过总扣款、关联事务及历史保护（专项已覆盖）。
 - 专项覆盖方向 / 反向、JPY / 舍入、手动优先、迟到成功与失败、取消 / 销毁、账户 / 本金改变、缺率 / 过期、历史编辑等，已随 [transfer_rate_prefill_test.dart](../app/test/pages/transfer_rate_prefill_test.dart) 交付；双雷电联网预填、手动率 / 实际额、余额、费用及旧账已通过。
 
 C-13 改动的关键路径：编辑页 `_pickTransferIncoming` / `_TransferIncomingDialog` / `_receivedButtonLabel` / `_ensureTransferRateQuote`，保存路径 `saveTransferWithFee` 未变。既有回归入口为 [转账录入](../app/test/pages/currency_transfer_entry_test.dart)、[手续费录入](../app/test/pages/transfer_fee_entry_test.dart)、[双额数据层](../app/test/data/cross_currency_transfer_test.dart)。
 
-后续 R-09 冻结同一汇率快照、逐笔折算 CNY，所有分区共用同一逐笔值；缺率明确列出未纳入项，部分结果不能称完整总额。R-10 才接入明细与图表默认总收支，两处原币筛选各自独立，账单列表仍全币种可见。年报、范围、收入、统计账单窗口和日历沿用同一集合与口径，详见专项计划。
+**R-09 的实现结果（已完成）：**
+
+- [report_conversion.dart](../app/lib/utils/report_conversion.dart)：`FrozenCnyQuotes.capture` 一次同步读取冻结全部 →CNY 报价（缺失币对进未纳入清单而非失败）；`CnyConvertedBills.convert` 对 R-01 选集逐笔单次半分远离零舍入，`valueFor` / `sumFor` 供所有分区复用同一逐笔值，缺率 / 未知代码按归一化码合并列出笔数与原币合计，`complete` 标志禁止部分结果自称完整；BigInt 全程可超 int64；只读模型，不改账单、余额或任何表。
+- `ReportFilter.allCurrencies` 全币种选择（type 校验委托主构造器）；全币种 `ReportResult` 的原币分类统计有运行时守卫（混合单位结果只作折算输入）。
+- 专项入口 [report_conversion_test.dart](../app/test/utils/report_conversion_test.dart)；独立复审七项边界全 PASS，P2 遗留 3 项作为 R-10 设计输入已写入代码文档（全币种结果禁读原始收支和、分区取同一选集实例、脏币种码展示口径）。
+
+**R-10 的实现目标与边界（当前任务）：**
+
+- 明细顶部月收入 / 支出 / 结余与图表总览默认复用 R-09 折算模型显示折合 CNY，展示估算口径、汇率来源 / 时间 / 过期与未纳入提示；分区只经 `valueFor` / `sumFor` 取值。
+- 两处均可各自切换指定原币，筛选状态互不影响且各自保留日期 / 分类；账单列表始终全币种可见。
+- 专项覆盖两个默认入口、互不干扰的原币切换、保留日期 / 分类、缺率提示、加载失败、编辑刷新和全币种列表回归；双雷电核对同条件下月摘要、图表、分类 / 趋势 / 明细金额一致，并回归原币视图与余额。
 
 ## 关键源码与不可破坏的规则
 
 | 领域 | 入口与规则 |
 |---|---|
 | 录入 / 转账 | [edit_bill_page.dart](../app/lib/pages/edit_bill_page.dart)：金额后直接点击币种；跨币确认、预填弹窗、手动输入及异步回调保护 |
-| 共享汇率 | [exchange](../app/lib/exchange)、[转账预填入口](../app/lib/exchange/transfer_rate_prefill.dart)、[设置页面](../app/lib/pages/exchange_rates_page.dart)、[providers](../app/lib/providers.dart)：设置页与转账预填已消费，报表折算尚未接入 |
+| 共享汇率 | [exchange](../app/lib/exchange)、[转账预填入口](../app/lib/exchange/transfer_rate_prefill.dart)、[折算模型](../app/lib/utils/report_conversion.dart)、[设置页面](../app/lib/pages/exchange_rates_page.dart)、[providers](../app/lib/providers.dart)：设置页与转账预填已消费，折算模型已交付，界面接线（R-10）尚未开始 |
 | 数据与事务 | [数据库](../app/lib/data/app_database.dart)：六表 `bills`、`accounts`、`categories`、`aa_groups`、`settlements`、`meta_entries`；迁移、关联与失败回滚不可绕过 |
 | 金额 / 余额 / 费用 | [utils](../app/lib/utils)：整数最小单位、BigInt 聚合；双额余额与唯一关联手续费 |
 | 明细 / 图表 | [bills_page.dart](../app/lib/pages/bills_page.dart)、[stats_page.dart](../app/lib/pages/stats_page.dart)、[报表聚合](../app/lib/utils/report.dart)、[底部详情](../app/lib/pages/bill_detail_page.dart) |
@@ -122,4 +132,4 @@ D:\Projects\AAExpenseSplitter\app\build\app\outputs\flutter-apk\app-debug.apk
 
 说明“完成哪个 ID / 用户可见变化”，再列实际审查结论、专项与全量数量 / 耗时、分析存量、两台雷电操作 / 原数据核对、代码与文档提交 / 远端核对及下一 ID。有未通过项就明确保留待办，不能只说“测试通过、已提交”。
 
-本轮预期下一次功能交付是 **R-09**，完成后才开始 **R-10**。
+本轮预期下一次功能交付是 **R-10**，完成后才开始 **R-02**。
