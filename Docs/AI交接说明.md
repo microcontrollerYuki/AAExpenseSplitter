@@ -16,42 +16,41 @@
 
 | 项目 | 本次交接状态 |
 |---|---|
-| 仓库 / 分支 | `https://github.com/microcontrollerYuki/AAExpenseSplitter.git` / `codex/stabilize-aa` |
-| 最近功能提交 | C-12：`3bdd3f8ca3e262f629c12559ffc0e5cc628fca03`，已推送并核对远端 |
+| 仓库 / 分支 | `https://github.com/microcontrollerYuki/AAExpenseSplitter.git` / `Glm5.3F`（已合并 `codex/stabilize-aa` 与远端 main） |
+| 最近功能提交 | C-13：`e79d24a409eaa68115889e5c3c9671a75b125dd0`，已推送并核对远端 |
 | 版本 / 数据库 | `app/pubspec.yaml` 为 `0.2.0+5000`；Drift / SQLite schema 6 |
-| 总任务 | 65 个唯一编号，28 完成 / 37 待办；C 多币种阶段 12 / 13。数量不是产品完成率 |
-| 最近专项 / 全量 | C-12 专项 92/92；全量 960/960，runner 约 60 秒、命令约 63.2 秒 |
+| 总任务 | 65 个唯一编号，29 完成 / 36 待办；C 多币种阶段 13 / 13。数量不是产品完成率 |
+| 最近专项 / 全量 | C-13 专项 108/108；全量 977/977，runner 约 55 秒、命令约 59 秒 |
 | 分析 | 0 error、27 条原有 warning / info；本轮新增 lint 已处理，不能宣称存量清零 |
-| 设备验收 | 两台既有雷电已安装 C-12，联网 / 手动 / 重启 / 断网缓存及普通页面冒烟通过；原六表与原网络设置已恢复 |
-| 当前下一项 | **C-13 转账汇率预填与手动覆盖** |
+| 设备验收 | 两台既有雷电已安装 C-13，联网预填 / 手动率 / 实际额 / 手续费组合 / 旧账回显 / 冒烟通过，业务六表指纹与基线一致；设备级断网操作遗留（雷电 WLAN 与 adbd 联动断开，详见开发进度 C-13 限制段） |
+| 当前下一项 | **R-09 同一汇率快照逐笔折算 CNY** |
 
 本次交接文档同时同步 C-12 完成状态。最终文档提交号从 `git log` 读取，不在本文写入自身提交号。上述测试是上一轮已执行的基线，接手后的改动仍须重新验证。
 
-已交付：手动收支、本人转账、六币种账户及实际双额、转账内手续费、两级分类 / 宫格选择 / 迁移 / 删除转移、手选年月、底部账单详情、原币月统计 / 分类 / 六个月趋势、共享汇率设置、图片 OCR 辅助录入、仅 CNY 的双人 AA 与加密文件交换。完整功能 / 限制见 [项目概览](README.md)。
+已交付：手动收支、本人转账、六币种账户及实际双额、转账内手续费、两级分类 / 宫格选择 / 迁移 / 删除转移、手选年月、底部账单详情、原币月统计 / 分类 / 六个月趋势、共享汇率设置、转账汇率预填与手动覆盖、图片 OCR 辅助录入、仅 CNY 的双人 AA 与加密文件交换。完整功能 / 限制见 [项目概览](README.md)。
 
-尚未交付：转账汇率预填、默认折算总收支、年报 / 自定义范围 / 收入独立报表 / 统计明细 / 日历、AA 完整分类路径兼容、无障碍与后台自动入账。预算、CSV、整库备份、回收站仍为占位。现有图片 OCR 和独立测试 App 不代表无障碍已实现；真机、真实支付平台版本、iOS、正式签名发布也未验收。
+尚未交付：默认折算总收支、年报 / 自定义范围 / 收入独立报表 / 统计明细 / 日历、AA 完整分类路径兼容、无障碍与后台自动入账。预算、CSV、整库备份、回收站仍为占位。现有图片 OCR 和独立测试 App 不代表无障碍已实现；真机、真实支付平台版本、iOS、正式签名发布也未验收。
 
 ## 接手时先执行
 
 1. 读取本仓库适用的 `AGENTS.md` 等指令（如果存在），检查 `git status --short`、当前分支、`git log -5 --oneline`、`git remote -v`。保存并理解已有修改，不使用强制 reset、清空工作区、强推或丢弃不属于自己的改动。
 2. 按顺序阅读 [项目概览](README.md) → [开发进度](开发进度.md) → [总 TODO](TODO-无障碍自动记账.md) → [测试说明](测试说明.md) → 对应专项计划。当前下一步另读 [多币种与报表计划](下一版本计划-多币种与报表.md) 与 [汇率服务](汇率服务.md)。档案和 [早期设计框架](AA记账-功能设计框架.md) 只作历史参考。
 3. 确认正在修改哪一份 checkout，SDK / 缓存脚本是否指向它，ADB 对应哪两台原实例。不要因为存在 D 盘主目录而切到另一份代码，也不要重建模拟器或清除应用数据。
-4. 选一个 TODO ID，说明本轮范围、受影响数据和正反例。当前应选 C-13；本轮无需同时实施 R-09 或重做 C-12。
+4. 选一个 TODO ID，说明本轮范围、受影响数据和正反例。当前应选 R-09；本轮无需同时实施 R-10 或重做 C-13。
 
 ## 任务顺序与下一小点
 
-按 **C-13 → R-09 → R-10 → R-02 → R-03 → R-04 → R-05 → R-06 → R-07 → R-08** 逐点交付，保留原编号，不按编号大小改顺序。随后再恢复 P1-05、P0-01 剩余能力探测、P2～P7。全部细项与验收要求保留在总 TODO，不另造一份状态清单。
+按 **R-09 → R-10 → R-02 → R-03 → R-04 → R-05 → R-06 → R-07 → R-08** 逐点交付，保留原编号，不按编号大小改顺序。随后再恢复 P1-05、P0-01 剩余能力探测、P2～P7。全部细项与验收要求保留在总 TODO，不另造一份状态清单。
 
-**C-13 的实现目标与边界：**
+**C-13 的实现结果（已完成）：**
 
-- 将已存在的共享汇率接入跨币本人转账，默认根据来源本金生成目标入账候选；允许手动率或实际入账额，保存前仍须明确确认。候选不等于已确认金额，也不直接影响余额。
-- 一次预填冻结不可变 `RateQuote`，使用完整精确分数及双方最小单位。显示方向、来源、时间、手动 / 过期状态；JPY 是整数，最终只舍入一次。
-- 更换来源 / 目标账户、方向、币种或本金后，让旧候选 / 确认失效；旧请求迟到成功或失败都不得覆盖新选择、手动输入或已关闭页面。备注 / 日期改变保留既有确认。
-- 历史转账优先回显已保存的双方实际额，不因打开编辑、联网刷新或汇率变化重算旧账；离线 / 缺率仍可人工确认双额。同币等额规则保持。
-- 同时回归 C-11：手续费按来源币种额外支付，来源改变后须重确认，目标入账确认独立维护；不能让汇率预填绕过总扣款、关联事务及历史保护。
-- 增加方向 / 反向、JPY / 舍入、手动优先、迟到成功与失败、取消 / 销毁、账户 / 本金改变、缺率 / 过期、保存失败、历史编辑等专项；双雷电实际验证联网预填、手动率 / 实际额、余额、费用及旧账。
+- `TransferRatePrefill` 接口（[transfer_rate_prefill.dart](../app/lib/exchange/transfer_rate_prefill.dart)）冻结不可变 `RateQuote` 生成跨币入账候选；弹窗显示方向 / 来源 / 时间 / 手动 / 过期状态，自定义汇率或实际额均为手动输入，采用即显式确认；JPY 只舍入一次。
+- 换账户 / 本金 / 币种后旧确认失效；迟到刷新只更新候选显示；历史转账优先回显已保存双额；离线缺率可人工确认；pumpPage 默认惰性注入，页面测试零网络。同签名内快照转旧不自愈是已知显示限制。
+- 专项入口 [transfer_rate_prefill_test.dart](../app/test/pages/transfer_rate_prefill_test.dart)；设备级断网操作因雷电 WLAN 与 adbd 联动断开而遗留（R-09 如需断网验证，先解决该环境约束）。
+- 同时回归 C-11：手续费按来源币种额外支付，来源改变后须重确认，目标入账确认独立维护；汇率预填不绕过总扣款、关联事务及历史保护（专项已覆盖）。
+- 专项覆盖方向 / 反向、JPY / 舍入、手动优先、迟到成功与失败、取消 / 销毁、账户 / 本金改变、缺率 / 过期、历史编辑等，已随 [transfer_rate_prefill_test.dart](../app/test/pages/transfer_rate_prefill_test.dart) 交付；双雷电联网预填、手动率 / 实际额、余额、费用及旧账已通过。
 
-C-13 优先阅读编辑页的 `_transferSignature`、`_receivedConfirmed`、`_pickReceivedAmount`、`_incomingAmount`、`_transferSummary` 和 `saveTransferWithFee` 保存路径，再接入 `ExchangeRateService.quote` / `RateRatio.convertMinorUnits`。既有回归入口为 [转账录入](../app/test/pages/currency_transfer_entry_test.dart)、[手续费录入](../app/test/pages/transfer_fee_entry_test.dart)、[双额数据层](../app/test/data/cross_currency_transfer_test.dart)；新增异步预填专项，不能只重复当前实现断言。
+C-13 改动的关键路径：编辑页 `_pickTransferIncoming` / `_TransferIncomingDialog` / `_receivedButtonLabel` / `_ensureTransferRateQuote`，保存路径 `saveTransferWithFee` 未变。既有回归入口为 [转账录入](../app/test/pages/currency_transfer_entry_test.dart)、[手续费录入](../app/test/pages/transfer_fee_entry_test.dart)、[双额数据层](../app/test/data/cross_currency_transfer_test.dart)。
 
 后续 R-09 冻结同一汇率快照、逐笔折算 CNY，所有分区共用同一逐笔值；缺率明确列出未纳入项，部分结果不能称完整总额。R-10 才接入明细与图表默认总收支，两处原币筛选各自独立，账单列表仍全币种可见。年报、范围、收入、统计账单窗口和日历沿用同一集合与口径，详见专项计划。
 
@@ -59,8 +58,8 @@ C-13 优先阅读编辑页的 `_transferSignature`、`_receivedConfirmed`、`_pi
 
 | 领域 | 入口与规则 |
 |---|---|
-| 录入 / 转账 | [edit_bill_page.dart](../app/lib/pages/edit_bill_page.dart)：金额后直接点击币种；跨币确认、手动输入及异步回调保护 |
-| 共享汇率 | [exchange](../app/lib/exchange)、[设置页面](../app/lib/pages/exchange_rates_page.dart)、[providers](../app/lib/providers.dart)：C-12 目前只有设置页消费，转账 / 报表尚未接入 |
+| 录入 / 转账 | [edit_bill_page.dart](../app/lib/pages/edit_bill_page.dart)：金额后直接点击币种；跨币确认、预填弹窗、手动输入及异步回调保护 |
+| 共享汇率 | [exchange](../app/lib/exchange)、[转账预填入口](../app/lib/exchange/transfer_rate_prefill.dart)、[设置页面](../app/lib/pages/exchange_rates_page.dart)、[providers](../app/lib/providers.dart)：设置页与转账预填已消费，报表折算尚未接入 |
 | 数据与事务 | [数据库](../app/lib/data/app_database.dart)：六表 `bills`、`accounts`、`categories`、`aa_groups`、`settlements`、`meta_entries`；迁移、关联与失败回滚不可绕过 |
 | 金额 / 余额 / 费用 | [utils](../app/lib/utils)：整数最小单位、BigInt 聚合；双额余额与唯一关联手续费 |
 | 明细 / 图表 | [bills_page.dart](../app/lib/pages/bills_page.dart)、[stats_page.dart](../app/lib/pages/stats_page.dart)、[报表聚合](../app/lib/utils/report.dart)、[底部详情](../app/lib/pages/bill_detail_page.dart) |
@@ -88,39 +87,39 @@ C-13 优先阅读编辑页的 `_transferSignature`、`_receivedConfirmed`、`_pi
 
 ## 本机环境与常用命令
 
-以下是本次交接机器的配置，不是其他机器的固定路径。当前 checkout 为 `C:\Users\22686\.codex\worktrees\0981\AAExpenseSplitter`；D 盘主目录为 `D:\Projects\AAExpenseSplitter`。开发缓存、构建和验证产物尽量集中在后者，避免重新占满 C 盘。
+以下是本次交接机器的配置，不是其他机器的固定路径。**当前活动 checkout 为 D 盘 `D:\Projects\AAExpenseSplitter`（分支 `Glm5.3F`）**；C 盘 `C:\Users\22686\.codex\worktrees\0981\AAExpenseSplitter` 是 codex 的旧 worktree，其 junction 存储与 `aa-env.ps1` 身份仍指向它，保持原样不要共用。
 
-SDK：Flutter `D:\Dev\flutter`，JDK `D:\Dev\jdk`，Android SDK `D:\Dev\Android\Sdk`；Pub / Gradle 缓存在 `D:\Dev\cache`。本机 `aa-dev.ps1` 内部加载环境并固定切到配置 checkout 的 `app`，**运行前核对 `aa-env.ps1` 的 `$aaWorkspace` 与当前检出一致**；不匹配先解决配置，不能用另一份代码的测试结果验收本次改动。
+SDK：Flutter `D:\Dev\flutter`，JDK `D:\Dev\jdk`，Android SDK `D:\Dev\Android\Sdk`；Pub / Gradle 缓存在 `D:\Dev\cache`。C-13 起在 D 盘工作区使用 **`aa-dev-glm.ps1`**（环境变量与 `aa-dev.ps1` 相同，但固定在 `D:\Projects\AAExpenseSplitter\app` 运行，构建产物留在该 checkout 的 `app\build` 真实目录，与 C 盘 worktree 的 junction 存储互不干扰）；旧的 `aa-dev.ps1` 仍绑定 C 盘 worktree，不要在 D 盘检出上使用。
 
 ```powershell
 # 依次执行，不并行运行同一工程的 Flutter / Dart 命令
-& 'D:\Projects\AAExpenseSplitter\.local-dev\aa-dev.ps1' -Tool flutter -ToolArgs @('test','--no-pub','--reporter','expanded','--timeout','20s')
-& 'D:\Projects\AAExpenseSplitter\.local-dev\aa-dev.ps1' -Tool flutter -ToolArgs @('analyze','--no-pub')
-& 'D:\Projects\AAExpenseSplitter\.local-dev\aa-dev.ps1' -Tool flutter -ToolArgs @('build','apk','--debug','--no-pub')
+& 'D:\Projects\AAExpenseSplitter\.local-dev\aa-dev-glm.ps1' -Tool flutter -ToolArgs @('test','--no-pub','--reporter','expanded','--timeout','20s')
+& 'D:\Projects\AAExpenseSplitter\.local-dev\aa-dev-glm.ps1' -Tool flutter -ToolArgs @('analyze','--no-pub')
+& 'D:\Projects\AAExpenseSplitter\.local-dev\aa-dev-glm.ps1' -Tool flutter -ToolArgs @('build','apk','--debug','--no-pub')
 ```
 
-专项命令在 `test` 参数后列出本点相关文件；当前 C-12 的六文件命令见测试说明。`aa-dev.ps1` 使用调用符 `&`，不要点加载该脚本；它末尾有 `exit`。同工程 SDK 命令并发会引发 native assets / 生成物竞争。
+专项命令在 `test` 参数后列出本点相关文件；当前 C-13 的四文件命令见测试说明。`aa-dev-glm.ps1` 使用调用符 `&`，不要点加载该脚本；它末尾有 `exit`。同工程 SDK 命令并发会引发 native assets / 生成物竞争。
 
-本工作区的 `app/build`、`.dart_tool`、`android/.gradle` 通过 junction 指向 `D:\Projects\AAExpenseSplitter\.local-dev\AAExpenseSplitter-0981` 的对应目录。当前 APK 实体路径：
+当前 APK 实体路径（D 盘 checkout 的真实目录，非 junction）：
 
 ```text
-D:\Projects\AAExpenseSplitter\.local-dev\AAExpenseSplitter-0981\build\app\outputs\flutter-apk\app-debug.apk
+D:\Projects\AAExpenseSplitter\app\build\app\outputs\flutter-apk\app-debug.apk
 ```
 
 雷电既有实例 0 为 `emulator-5554`（横屏），1 为 `emulator-5556`（竖屏）；包名 `com.aaexpense.aa_expense_splitter`，启动 Activity `.MainActivity`。先用 `adb devices` 确认，不创建新实例替代。
 
 ```powershell
 & 'D:\Dev\Android\Sdk\platform-tools\adb.exe' devices
-& 'D:\Dev\Android\Sdk\platform-tools\adb.exe' -s emulator-5554 install -r 'D:\Projects\AAExpenseSplitter\.local-dev\AAExpenseSplitter-0981\build\app\outputs\flutter-apk\app-debug.apk'
-& 'D:\Dev\Android\Sdk\platform-tools\adb.exe' -s emulator-5556 install -r 'D:\Projects\AAExpenseSplitter\.local-dev\AAExpenseSplitter-0981\build\app\outputs\flutter-apk\app-debug.apk'
+& 'D:\Dev\Android\Sdk\platform-tools\adb.exe' -s emulator-5554 install -r 'D:\Projects\AAExpenseSplitter\app\build\app\outputs\flutter-apk\app-debug.apk'
+& 'D:\Dev\Android\Sdk\platform-tools\adb.exe' -s emulator-5556 install -r 'D:\Projects\AAExpenseSplitter\app\build\app\outputs\flutter-apk\app-debug.apk'
 ```
 
-本机雷电 `D:\software\leidian\LDPlayer14\ldconsole.exe`。关闭模拟器 WiFi 会使 ADB 失联，**不要依赖 `adb shell svc wifi disable` 后仍能用 ADB 恢复**。C-12 已实际使用宿主 `action --index 0 --key call.network --value offline` / `connect` 验证断网及恢复；重用前核对实例，保留并恢复原网络状态。第二台此前通过界面恢复 WiFi；这些是设备控制经验，不能当成 App 缺陷或真实支付平台验收。
+本机雷电 `D:\software\leidian\LDPlayer14\ldconsole.exe`。**C-13 再次证实：无论是宿主 `call.network offline` 还是客户机设置里关闭 WLAN，都会同时断开该实例的 adbd，且软件手段（ldconsole / adb reconnect / 实例重启前 WLAN 未恢复）无法恢复**；实例 1 曾因此需人工在窗口内重开 WLAN 后重启实例才恢复。断网类验收必须先准备不依赖 ADB 的恢复手段，或改用无网络依赖的验证方式。这些是设备控制经验，不能当成 App 缺陷或真实支付平台验收。
 
-本机验证记录只放 `D:\Projects\AAExpenseSplitter\.local-dev\verification`。C-12 子目录记录本轮证据，不要重跑其中旧的断网 / 清理脚本，未来数据基线已不同。此路径和环境脚本不随 Git 仓库分发，其他机器应按实际 SDK / 模拟器配置等价流程。
+本机验证记录只放 `D:\Projects\AAExpenseSplitter\.local-dev\verification`。C-13 子目录记录本轮证据（QA 脚本 / 快照 / 清理 SQL / 截图），不要重跑其中旧脚本，未来数据基线已不同；`.local-dev/fix-bom.ps1` 用于给 C-13 的 PowerShell 脚本补 UTF-8 BOM（PowerShell 5.1 解析中文需要）。此路径和环境脚本不随 Git 仓库分发，其他机器应按实际 SDK / 模拟器配置等价流程。
 
 ## 每次交付回复模板
 
 说明“完成哪个 ID / 用户可见变化”，再列实际审查结论、专项与全量数量 / 耗时、分析存量、两台雷电操作 / 原数据核对、代码与文档提交 / 远端核对及下一 ID。有未通过项就明确保留待办，不能只说“测试通过、已提交”。
 
-本轮预期下一次功能交付是 **C-13**，完成后才开始 **R-09**。
+本轮预期下一次功能交付是 **R-09**，完成后才开始 **R-10**。
