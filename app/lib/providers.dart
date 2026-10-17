@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'data/app_database.dart';
 import 'exchange/exchange_rate_service.dart';
+import 'exchange/transfer_rate_prefill.dart';
 import 'sync/aa_sync_service.dart';
 import 'utils/report_filter.dart';
 
@@ -17,6 +18,12 @@ final exchangeRateServiceProvider = Provider<ExchangeRateService>((ref) {
   );
   ref.onDispose(service.dispose);
   return service;
+});
+
+/// C-13 转账汇率预填入口：冻结共享服务的不可变快照。
+/// 测试经 pumpPage 注入可控实现，避免页面测试触网。
+final transferRatePrefillProvider = Provider<TransferRatePrefill>((ref) {
+  return ExchangeRatePrefill(ref.watch(exchangeRateServiceProvider));
 });
 
 final aaSyncServiceProvider = Provider<AaSyncService>(

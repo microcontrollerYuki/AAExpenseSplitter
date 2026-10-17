@@ -23,7 +23,10 @@ import 'package:share_plus_platform_interface/share_plus_platform_interface.dart
     as spi;
 
 import 'package:aa_expense_splitter/data/app_database.dart';
+import 'package:aa_expense_splitter/exchange/exchange_rate_service.dart';
+import 'package:aa_expense_splitter/exchange/transfer_rate_prefill.dart';
 import 'package:aa_expense_splitter/providers.dart';
+import 'package:aa_expense_splitter/utils/currency.dart';
 
 /// 内存版 AppDatabase：不落盘、不依赖 path_provider
 class TestAppDatabase extends AppDatabase {
@@ -130,16 +133,37 @@ Widget localizedApp(Widget child) => MaterialApp(
       home: Scaffold(body: child),
     );
 
+/// 惰性转账汇率入口（C-13 默认注入）：无报价、不联网、不通知，
+/// 既有收支 / 转账页面测试保持确定性。需要候选行为的测试自行实现接口注入。
+class NullTransferRatePrefill implements TransferRatePrefill {
+  @override
+  bool get loading => false;
+
+  @override
+  RateQuote? quote(Currency base, Currency target) => null;
+
+  @override
+  Future<void> ensureFresh(Currency base, Currency target) async {}
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
+}
+
 /// 把页面装进 ProviderScope（内存库）+ 本地化壳，泵一帧。
 /// 返回实际使用的数据库，测试结尾须调用 [disposePage] 卸载并关闭，
 /// 否则 drift watch 流的 pending timer 会让 testWidgets 报错
 /// [overrides] 元素须为 riverpod 的 override 表达式（riverpod 3 不再公开
 /// Override 类型，这里以 List<dynamic> 传递）
+/// [transferRates] 覆盖 C-13 转账汇率预填入口；缺省为惰性实现。
 Future<AppDatabase> pumpPage(
   WidgetTester tester,
   Widget page, {
   AppDatabase? db,
   List<dynamic> overrides = const [],
+  TransferRatePrefill? transferRates,
 }) async {
   final database = db ?? TestAppDatabase();
   addTearDown(() => disposePage(tester, database));
@@ -149,6 +173,9 @@ Future<AppDatabase> pumpPage(
       retry: (retryCount, error) => null,
       overrides: [
         databaseProvider.overrideWithValue(database),
+        transferRatePrefillProvider.overrideWithValue(
+          transferRates ?? NullTransferRatePrefill(),
+        ),
         ...overrides,
       ],
       child: localizedApp(page),

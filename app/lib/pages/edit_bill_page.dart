@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -6,6 +8,9 @@ import 'package:uuid/uuid.dart';
 import '../data/app_database.dart';
 import '../data/category_hierarchy.dart';
 import '../data/presets.dart';
+import '../exchange/exchange_rate.dart';
+import '../exchange/exchange_rate_service.dart' show RateQuote;
+import '../exchange/transfer_rate_prefill.dart';
 import '../providers.dart';
 import '../recognition/bill_ocr.dart';
 import '../sync/aa_sync_service.dart';
@@ -21,6 +26,9 @@ import '../widgets/currency_picker.dart';
 import '../widgets/number_pad.dart';
 import '../widgets/ocr_entry_sheet.dart';
 import 'categories_page.dart';
+
+/// 单笔持久金额的 int64 上限；候选换算越界时不采用，交由手动输入。
+final BigInt _maxStoredMinorUnits = BigInt.parse('9223372036854775807');
 
 /// 记账 / 编辑账单页（钱迹风格布局）：
 /// 顶部类型页签 + 分层分类宫格 + 原币金额 / 账户实际额 / 计算键盘。
@@ -58,6 +66,116 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
   String? _feeCategoryId;
   String? _feeSourceSignature;
   Currency _feeCurrency = Currency.cny;
+
+  // C-13：跨币转账的共享汇率预填。候选只作显式确认的输入，
+  // 迟到刷新只更新候选显示，不覆盖已确认入账或已保存账单。
+  TransferRatePrefill? _rates;
+  VoidCallback? _ratesListener;
+  String? _rateRequestSignature;
+
+  Currency _accountCurrency(Account account) =>
+      Currency.tryFromCode(account.currency)!;
+
+  TransferRatePrefill get _ratePrefill {
+    final rates = _rates;
+    if (rates != null) return rates;
+    final service = ref.read(transferRatePrefillProvider);
+    _rates = service;
+    return service;
+  }
+
+  /// 按冻结快照精确换算，只在最终一步舍入；越出 int64 入账范围返回 null。
+  BigInt? _rateCandidateValue(
+    RateQuote quote,
+    int units,
+    Currency source,
+    Currency target,
+  ) {
+    final value = quote.ratio.convertMinorUnits(
+      BigInt.from(units),
+      source,
+      target,
+    );
+    if (value < BigInt.one || value > _maxStoredMinorUnits) return null;
+    return value;
+  }
+
+  /// 同一转账签名只发起一次取率；已有可用快照（手动或未过期）不再请求。
+  void _ensureTransferRateQuote(Account source, Account target, int units) {
+    final rates = _ratePrefill;
+    if (_ratesListener == null) {
+      _ratesListener = () {
+        if (mounted) setState(() {});
+      };
+      rates.addListener(_ratesListener!);
+    }
+    final signature = _transferSignature(source, target, units);
+    if (_rateRequestSignature == signature) return;
+    _rateRequestSignature = signature;
+    final sourceCurrency = _accountCurrency(source);
+    final targetCurrency = _accountCurrency(target);
+    final existing = rates.quote(sourceCurrency, targetCurrency);
+    if (existing != null && (existing.isManual || !existing.isStale)) return;
+    () async {
+      try {
+        await rates.ensureFresh(sourceCurrency, targetCurrency);
+      } catch (_) {
+        // 服务已记录失败状态；页面按缺汇率展示，不打断录入。
+      }
+    }();
+  }
+
+  Future<void> _pickTransferIncoming(Account source, Account target) async {
+    final units = evaluateMoneyExpression(_amount, _currency);
+    if (_hasOperator || units == null || units <= 0 || source.id == target.id) {
+      _snack('请先选择不同账户并输入有效出账金额，表达式需先按 =');
+      return;
+    }
+    final sourceCurrency = _accountCurrency(source);
+    final targetCurrency = _accountCurrency(target);
+    final signature = _transferSignature(source, target, units);
+    final quote = _ratePrefill.quote(sourceCurrency, targetCurrency);
+    final candidate = quote == null
+        ? null
+        : _rateCandidateValue(quote, units, sourceCurrency, targetCurrency);
+    final initial = _receivedConfirmed(source, target, units)
+        ? _receivedAmount
+        : candidate?.toInt();
+    final amount = await showDialog<int>(
+      context: context,
+      builder: (_) => _TransferIncomingDialog(
+        sourceCurrency: sourceCurrency,
+        targetCurrency: targetCurrency,
+        units: units,
+        quote: quote,
+        candidate: candidate,
+        initial: initial,
+      ),
+    );
+    if (amount == null || !mounted || _type != 2) return;
+    final current = _entryAccounts(
+      ref.read(accountsProvider).value ?? const <Account>[],
+    );
+    final currentSource = current.where((a) => a.id == _accountId).firstOrNull;
+    final currentTarget = current
+        .where((a) => a.id == _toAccountId)
+        .firstOrNull;
+    final currentUnits = evaluateMoneyExpression(_amount, _currency);
+    if (currentSource == null ||
+        currentTarget == null ||
+        currentUnits == null ||
+        signature !=
+            _transferSignature(currentSource, currentTarget, currentUnits)) {
+      _snack('账户或出账金额已变化，请重新确认入账金额');
+      return;
+    }
+    setState(() {
+      _receivedAmount = amount;
+      _receivedSignature = signature;
+      _originalReceived = false;
+      _requireReceivedConfirmation = true;
+    });
+  }
 
   String _feeSignature(Account source) => '${source.id}|${source.currency}';
 
@@ -275,6 +393,9 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
 
   @override
   void dispose() {
+    final listener = _ratesListener;
+    final rates = _rates;
+    if (listener != null && rates != null) rates.removeListener(listener);
     _noteCtl.dispose();
     super.dispose();
   }
@@ -1435,6 +1556,15 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
       }
     }
     final centsNow = _evaluatedCents();
+    // 跨币转账取得共享汇率快照，生成待确认的入账候选（C-13）。
+    if (isTransfer &&
+        selAcc != null &&
+        selToAcc != null &&
+        selAcc.currency != selToAcc.currency &&
+        centsNow > 0 &&
+        !_hasOperator) {
+      _ensureTransferRateQuote(selAcc, selToAcc, centsNow);
+    }
 
     final amountColor = _type == 0
         ? kExpenseColor
@@ -1784,6 +1914,47 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
     );
   }
 
+  /// 入账按钮文案：已确认显示实际额；跨币待确认时附汇率候选与来源 / 过期状态。
+  String _receivedButtonLabel(
+    Account? source,
+    Account? target,
+    int units,
+    int? incoming,
+    Currency? targetCurrency,
+  ) {
+    if (incoming != null &&
+        targetCurrency != null &&
+        source != null &&
+        target != null) {
+      return '入账 ${target.currency} ${formatMinorUnits(incoming, targetCurrency, grouping: false)}';
+    }
+    if (source == null || target == null || targetCurrency == null) {
+      return '入账 ${target?.currency ?? '—'} 待确认';
+    }
+    if (source.currency == target.currency) {
+      return '入账 ${target.currency} 待确认';
+    }
+    final rates = _ratePrefill;
+    final quote = rates.quote(_accountCurrency(source), targetCurrency);
+    final badge = quote == null
+        ? (rates.loading ? '正在获取汇率…' : '暂无汇率')
+        : '${quote.isManual ? '手动汇率' : quote.source}'
+            '${quote.isStale ? ' · 已过期' : ''}';
+    final candidate = quote == null
+        ? null
+        : _rateCandidateValue(
+            quote,
+            units,
+            _accountCurrency(source),
+            targetCurrency,
+          );
+    if (candidate == null) {
+      return '入账 ${targetCurrency.code} 待确认 · $badge';
+    }
+    return '入账 ${targetCurrency.code} 待确认 · 候选 '
+        '${formatBigMinorUnits(candidate, targetCurrency, grouping: false)}（$badge）';
+  }
+
   Widget _transferSummary(Account? source, Account? target, int units) {
     final incoming = source != null && target != null
         ? _incomingAmount(source, target, units)
@@ -1818,11 +1989,19 @@ class _EditBillPageState extends ConsumerState<EditBillPage> {
                   target == null ||
                   !_needsReceived(source, target)
               ? null
+              : source.currency != target.currency
+              ? () => _pickTransferIncoming(source, target)
               : () => _pickReceivedAmount(source, target),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Text(
-              '入账 ${target?.currency ?? '—'} ${incoming == null || targetCurrency == null ? '待确认' : formatMinorUnits(incoming, targetCurrency, grouping: false)}',
+              _receivedButtonLabel(
+                source,
+                target,
+                units,
+                incoming,
+                targetCurrency,
+              ),
               textAlign: TextAlign.center,
             ),
           ),
@@ -2262,4 +2441,201 @@ class _ActualAmountDialogState extends State<_ActualAmountDialog> {
       FilledButton(onPressed: _confirm, child: const Text('确认')),
     ],
   );
+}
+
+/// C-13 跨币转账入账确认：冻结一份不可变汇率快照，候选按完整分数换算并只
+/// 舍入一次；自定义汇率或直接改入账额均为手动输入，采用即显式确认。
+class _TransferIncomingDialog extends StatefulWidget {
+  const _TransferIncomingDialog({
+    required this.sourceCurrency,
+    required this.targetCurrency,
+    required this.units,
+    required this.quote,
+    required this.candidate,
+    required this.initial,
+  });
+
+  final Currency sourceCurrency;
+  final Currency targetCurrency;
+  final int units;
+  final RateQuote? quote;
+  final BigInt? candidate;
+  final int? initial;
+
+  @override
+  State<_TransferIncomingDialog> createState() =>
+      _TransferIncomingDialogState();
+}
+
+class _TransferIncomingDialogState extends State<_TransferIncomingDialog> {
+  late final TextEditingController _amountController = TextEditingController(
+    text: widget.initial == null
+        ? ''
+        : formatMinorUnits(widget.initial!, widget.targetCurrency, grouping: false),
+  );
+  final TextEditingController _rateController = TextEditingController();
+  String? _error;
+  String? _rateError;
+  bool _closed = false;
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _rateController.dispose();
+    super.dispose();
+  }
+
+  void _onRateChanged(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      setState(() => _rateError = null);
+      return;
+    }
+    final RateRatio rate;
+    try {
+      rate = RateRatio.parse(trimmed);
+    } on FormatException {
+      setState(() => _rateError = '汇率格式无效');
+      return;
+    }
+    final value = rate.convertMinorUnits(
+      BigInt.from(widget.units),
+      widget.sourceCurrency,
+      widget.targetCurrency,
+    );
+    setState(() {
+      _rateError = null;
+      // 换算出合法金额即清除上次确认失败的残留提示。
+      _error = null;
+      // 换算结果超出可保存范围时清空，交由用户手动输入实际额。
+      _amountController.text = value >= BigInt.one && value <= _maxStoredMinorUnits
+          ? formatBigMinorUnits(value, widget.targetCurrency, grouping: false)
+          : '';
+    });
+  }
+
+  void _confirm() {
+    if (_closed) return;
+    final units = parseMoneyToMinorUnits(
+      _amountController.text,
+      widget.targetCurrency,
+    );
+    if (units == null || units <= 0) {
+      setState(
+        () => _error = widget.targetCurrency.minorUnitDigits == 0
+            ? '请输入大于零的整数金额'
+            : '请输入大于零且不超过两位小数的金额',
+      );
+      return;
+    }
+    _closed = true;
+    Navigator.pop(context, units);
+  }
+
+  void _cancel() {
+    if (_closed) return;
+    _closed = true;
+    Navigator.pop(context);
+  }
+
+  Widget _quoteInfo() {
+    final quote = widget.quote;
+    final style = const TextStyle(fontSize: 12, color: Colors.grey);
+    if (quote == null) {
+      return Text(
+        '暂无可用汇率：可直接输入入账额，或填写自定义汇率换算。',
+        style: style,
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '1 ${widget.sourceCurrency.code} ≈ '
+          '${quote.ratio.toDecimalString(fractionDigits: 10)} '
+          '${widget.targetCurrency.code}（约值）',
+        ),
+        const SizedBox(height: 4),
+        Text(
+          quote.isManual
+              ? '来源：手动设置 · 更新时间：${_rateTimeText(quote.fetchedAt)}'
+              : '来源：${quote.source} · 报价 ${_rateDateText(quote.quotedAt)} · '
+                  '获取 ${_rateTimeText(quote.fetchedAt)}',
+          style: style,
+        ),
+        if (quote.isStale)
+          const Text(
+            '汇率已过期，换算结果仅作参考。',
+            style: TextStyle(fontSize: 12, color: Colors.orange),
+          ),
+        if (widget.candidate == null)
+          Text('按当前汇率换算超出可保存范围，请手动输入入账额。', style: style),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
+    title: const Text('转入账户实际入账'),
+    content: SizedBox(
+      width: 420,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            '出账 ${widget.sourceCurrency.code} '
+            '${formatMinorUnits(widget.units, widget.sourceCurrency, grouping: false)}',
+            style: const TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          _quoteInfo(),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('transfer-rate-input'),
+            controller: _rateController,
+            maxLength: 64,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(
+              labelText: '自定义汇率（可选）',
+              helperText: '留空使用上方汇率；填写后按此换算入账额',
+            ).copyWith(errorText: _rateError),
+            onChanged: _onRateChanged,
+          ),
+          TextField(
+            key: const ValueKey('account-amount-input'),
+            controller: _amountController,
+            autofocus: true,
+            maxLength: 256,
+            keyboardType: TextInputType.numberWithOptions(
+              decimal: widget.targetCurrency.minorUnitDigits > 0,
+            ),
+            decoration: InputDecoration(
+              labelText: '${widget.targetCurrency.code} 入账额',
+              helperText: '以实际入账额为准；保存前需确认',
+              errorText: _error,
+            ),
+            onSubmitted: (_) => _confirm(),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(onPressed: _cancel, child: const Text('取消')),
+      FilledButton(onPressed: _confirm, child: const Text('确认')),
+    ],
+  );
+}
+
+String _rateDateText(DateTime value) =>
+    '${value.year}-'
+    '${value.month.toString().padLeft(2, '0')}-'
+    '${value.day.toString().padLeft(2, '0')}';
+
+String _rateTimeText(DateTime value) {
+  final local = value.toLocal();
+  return '${_rateDateText(local)} '
+      '${local.hour.toString().padLeft(2, '0')}:'
+      '${local.minute.toString().padLeft(2, '0')}';
 }
