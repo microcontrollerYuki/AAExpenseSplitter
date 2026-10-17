@@ -72,7 +72,7 @@ class ReportCategoryFilter {
 class ReportFilter {
   ReportFilter({
     this.period,
-    required this.currency,
+    this.currency,
     this.type,
     this.category = const ReportCategoryFilter.all(),
   }) {
@@ -81,11 +81,21 @@ class ReportFilter {
     }
   }
 
+  /// Null selects every stored currency for CNY conversion views; a code
+  /// selects that exact stored identity, including unknown historical codes.
+  final String? currency;
   final ReportPeriod? period;
-  // Exact stored currency identity, including unknown historical codes.
-  final String currency;
   final int? type;
   final ReportCategoryFilter category;
+
+  /// Every currency in one immutable selection; the CNY conversion model
+  /// consumes this set, original-currency views keep single-currency filters.
+  /// Validation delegates to the main constructor.
+  ReportFilter.allCurrencies({
+    ReportPeriod? period,
+    int? type,
+    ReportCategoryFilter category = const ReportCategoryFilter.all(),
+  }) : this(period: period, currency: null, type: type, category: category);
 }
 
 /// Shared membership rules for summaries, charts and future report details.
@@ -121,7 +131,8 @@ List<Bill> filterReportBills({
             (bill) =>
                 (bill.type == 0 || bill.type == 1) &&
                 bill.deletedAt == null &&
-                bill.currency == filter.currency &&
+                (filter.currency == null ||
+                    bill.currency == filter.currency) &&
                 (filter.type == null || bill.type == filter.type) &&
                 (filter.period == null ||
                     filter.period!.contains(bill.dateMs)) &&

@@ -6,6 +6,9 @@ export 'report_filter.dart';
 
 /// All values and drill-down collections are derived from this immutable
 /// selection. A provider refresh builds a new result rather than mutating it.
+/// All-currency selections (filter.currency == null) are conversion inputs
+/// for the R-09 model only: their raw income/expense sums mix units, and the
+/// original-currency category statistics require a single-currency filter.
 class ReportResult {
   ReportResult._(this.filter, this.bills, this._categories)
     : incomeBills = List.unmodifiable(bills.where((b) => b.type == 1)),
@@ -30,14 +33,22 @@ class ReportResult {
     bills: incomeBills,
     categories: _categories,
     type: 1,
-    currency: filter.currency,
+    currency: _statsCurrency,
   );
   late final CategoryStats expenseStats = aggregateCategoryStats(
     bills: expenseBills,
     categories: _categories,
     type: 0,
-    currency: filter.currency,
+    currency: _statsCurrency,
   );
+
+  String get _statsCurrency {
+    final currency = filter.currency;
+    if (currency == null) {
+      throw StateError('原币分类统计需要单币种筛选；全币种结果请使用 CNY 折算模型');
+    }
+    return currency;
+  }
 
   List<Bill> categoryBills(ReportCategoryFilter category, {int? type}) =>
       filterReportBills(
