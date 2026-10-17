@@ -6,10 +6,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../data/app_database.dart';
-import '../data/presets.dart';
 import '../providers.dart';
 import '../sync/aa_sync_service.dart';
 import '../theme.dart';
+import '../utils/account_selection.dart';
 import '../utils/money.dart';
 import 'edit_bill_page.dart';
 
@@ -31,6 +31,18 @@ class AaPage extends ConsumerWidget {
   // 省得每个子组件重复写：这里仅作为静态入口，实际逻辑在下方各组件中
   static void showSnack(BuildContext context, String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// 弹层或确认框打开后仍可能收到结算，展示拒绝原因并保留当前页面。
+  static Future<bool> mutate(
+      BuildContext context, Future<void> Function() action) async {
+    try {
+      await action();
+      return true;
+    } on StateError catch (error) {
+      if (context.mounted) showSnack(context, error.message);
+      return false;
+    }
   }
 }
 
@@ -163,9 +175,8 @@ int _myShare(AaGroup g, String myUid) {
   return g.payerUid == myUid ? g.totalAmount - partnerShare : partnerShare;
 }
 
-/// AA 状态文案（设计图枚举：应收/应付 → 分区承载；拒绝/待修改/删除 → 行内状态）
-/// AA 状态枚举（图 1）：应收 / 拒绝 / 待修改
-/// status2：应收方(发起方)看「待修改」，应付方(接收方)看「拒绝」
+/// 收付方向由垫付方决定；退回处理责任由发起方决定。
+/// status2：发起方看「待修改」，另一方看「拒绝」。
 /// status3：已转普通收支，不在 AA 列表显示
 String _statusText(AaGroup g, String myUid) {
   if (g.settled) return '已结算';
@@ -175,7 +186,7 @@ String _statusText(AaGroup g, String myUid) {
     case 3:
       return '已转普通收支';
     default:
-      return '应收';
+      return g.payerUid == myUid ? '应收' : '应付';
   }
 }
 
@@ -231,7 +242,6 @@ class _GroupsSectionState extends State<_GroupsSection> {
                   color: widget.accent)),
         ),
         for (final item in shown)
-        for (final item in shown)
           ListTile(
             dense: true,
             leading:
@@ -248,7 +258,7 @@ class _GroupsSectionState extends State<_GroupsSection> {
                   child: Text(_statusText(item, widget.myUid),
                       style: const TextStyle(fontSize: 12)),
                 ),
-                Text('¥ ${centsToText(_myShare(item, widget.myUid))}',
+                Text('¥ ${centsToText(AaSyncService.shareOfNonPayer(item.totalAmount))}',
                     style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
@@ -403,10 +413,11 @@ class _DashboardState extends ConsumerState<_Dashboard> {
 
   Future<void> _settleDialog(BuildContext context, WidgetRef ref, int net,
       List<Account> accounts, String partnerName) async {
-    final realAccounts =
-        accounts.where((a) => a.id != kAaCreditAccountId).toList();
+    final realAccounts = cnyEntryAccounts(accounts, includeAaCredit: false);
     if (realAccounts.isEmpty) {
-      AaPage.showSnack(context, '请先在「账本」中创建真实账户');
+      AaPage.showSnack(context, accounts.any((a) => a.currency != 'CNY')
+          ? noCnyAccountMessage
+          : '请先在「账本」中创建真实账户');
       return;
     }
     var selected = realAccounts.first.id;
@@ -707,10 +718,12 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                             foregroundColor: kExpenseColor),
                         onPressed: () async {
                           final reason = await askReturnReason(context);
-                          if (reason == null) return; // 取消
-                          await ref
-                              .read(aaSyncServiceProvider)
-                              .setGroupStatus(g.id, 2, reason: reason);
+                          if (reason == null || !context.mounted) return;
+                          final service = ref.read(aaSyncServiceProvider);
+                          if (!await AaPage.mutate(context,
+                              () => service.setGroupStatus(g.id, 2, reason: reason))) {
+                            return;
+                          }
                           if (context.mounted) {
                             AaPage.showSnack(context, '已退回，等待伙伴处理');
                           }
@@ -746,9 +759,11 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                               final categories = ref.read(categoriesProvider)
                                       .value ??
                                   const <Category>[];
-                              await ref
-                                  .read(aaSyncServiceProvider)
-                                  .adoptShareBillsDefault(picked, categories);
+                              final service = ref.read(aaSyncServiceProvider);
+                              if (!await AaPage.mutate(context,
+                                  () => service.adoptShareBillsDefault(picked, categories))) {
+                                return;
+                              }
                               if (!mounted || !context.mounted) return;
                               setState(() {
                                 _batchMode = false;
@@ -768,10 +783,14 @@ class _DashboardState extends ConsumerState<_Dashboard> {
                         : () async {
                             final service =
                                 ref.read(aaSyncServiceProvider);
-                            for (final g in pending) {
-                              if (_selected.contains(g.id)) {
-                                await service.setGroupStatus(g.id, 2);
+                            if (!await AaPage.mutate(context, () async {
+                              for (final g in pending) {
+                                if (_selected.contains(g.id)) {
+                                  await service.setGroupStatus(g.id, 2);
+                                }
                               }
+                            })) {
+                              return;
                             }
                             if (!mounted || !context.mounted) return;
                             setState(() {
@@ -912,8 +931,11 @@ class _DashboardState extends ConsumerState<_Dashboard> {
         ],
       ),
     );
-    if (ok != true) return;
-    await ref.read(aaSyncServiceProvider).cancelAaGroup(groupId: g.id);
+    if (ok != true || !context.mounted) return;
+    final service = ref.read(aaSyncServiceProvider);
+    if (!await AaPage.mutate(context, () => service.cancelAaGroup(groupId: g.id))) {
+      return;
+    }
     if (context.mounted) {
       AaPage.showSnack(context, '已转普通收支，请导出同步文件通知伙伴');
     }
@@ -1174,14 +1196,19 @@ class AaShareSheet extends StatelessWidget {
   final AaSyncService service;
 
   Future<void> _confirm(BuildContext context) async {
-    await service.confirmShare(group: group);
+    if (!await AaPage.mutate(context, () => service.confirmShare(group: group))) {
+      return;
+    }
     if (context.mounted) Navigator.pop(context, 'adopt');
   }
 
   Future<void> _returnBill(BuildContext context) async {
     final reason = await askReturnReason(context);
-    if (reason == null) return; // 取消
-    await service.setGroupStatus(group.id, 2, reason: reason);
+    if (reason == null || !context.mounted) return;
+    if (!await AaPage.mutate(context,
+        () => service.setGroupStatus(group.id, 2, reason: reason))) {
+      return;
+    }
     if (context.mounted) Navigator.pop(context, 'return');
   }
 

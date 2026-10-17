@@ -7,7 +7,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/app_database.dart';
 import '../providers.dart';
 import '../theme.dart';
-import '../utils/money.dart';
+import '../utils/bill_money.dart';
+import '../utils/category_stats.dart';
+import '../utils/currency.dart';
+import '../utils/report.dart';
+import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
 
 /// 图表页：本月分类支出饼图 + 近 6 个月收支趋势
@@ -17,59 +21,93 @@ class StatsPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final m = ref.watch(selectedMonthProvider);
-    final monthBills = ref.watch(monthBillsProvider).value ?? const <Bill>[];
-    final allBills = ref.watch(allBillsProvider).value ?? const <Bill>[];
-    final categories =
-        ref.watch(categoriesProvider).value ?? const <Category>[];
-    final catBy = {for (final c in categories) c.id: c};
-    // kind=2（AA往来）是内部挂账应收，不计入收支统计
-    final internalCatIds = {
-      for (final c in categories)
-        if (c.kind == 2) c.id
-    };
-
-    // 本月分类支出汇总
-    final byCat = <String, int>{};
-    var totalExpense = 0;
-    for (final b in monthBills) {
-      if (b.type != 0) continue;
-      final key = b.categoryId ?? '';
-      byCat[key] = (byCat[key] ?? 0) + b.amount;
-      totalExpense += b.amount;
+    final currency = ref.watch(selectedCurrencyProvider);
+    final monthBillsAsync = ref.watch(monthBillsProvider);
+    final allBillsAsync = ref.watch(allBillsProvider);
+    final allBills = allBillsAsync.value ?? const <Bill>[];
+    final categoriesAsync = ref.watch(categoriesProvider);
+    // Internal-income exclusions require the category metadata. Never draw
+    // provisional income totals while that metadata is missing or failed.
+    if (categoriesAsync.isLoading || categoriesAsync.hasError) {
+      return Scaffold(
+        appBar: AppBar(title: const MonthBar(), centerTitle: true),
+        body: Column(
+          children: [
+            CurrencyFilter(bills: allBills),
+            Expanded(
+              child: Center(
+                child: categoriesAsync.hasError
+                    ? const Text('分类加载失败，暂无法统计')
+                    : const Text('正在加载分类…'),
+              ),
+            ),
+          ],
+        ),
+      );
     }
-    final catEntries = byCat.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
+    if (!monthBillsAsync.hasValue ||
+        !allBillsAsync.hasValue ||
+        monthBillsAsync.isReloading ||
+        allBillsAsync.isReloading ||
+        monthBillsAsync.hasError ||
+        allBillsAsync.hasError) {
+      final failed = monthBillsAsync.hasError || allBillsAsync.hasError;
+      return Scaffold(
+        appBar: AppBar(title: const MonthBar(), centerTitle: true),
+        body: Column(
+          children: [
+            CurrencyFilter(bills: allBills),
+            Expanded(
+              child: Center(child: Text(failed ? '账单读取失败，请稍后重试' : '账单加载中…')),
+            ),
+          ],
+        ),
+      );
+    }
+    final categories = categoriesAsync.value ?? const <Category>[];
+    final report = buildReport(
+      // Both the category chart and trend use one database snapshot, so a
+      // delayed monthly stream cannot briefly disagree with the trend.
+      bills: allBills,
+      categories: categories,
+      filter: ReportFilter(period: ReportPeriod.month(m), currency: currency),
+    );
 
     // 近 6 个月趋势（以选中月份为终点）
     final trend = <_MonthSum>[];
     for (var i = 5; i >= 0; i--) {
       final mm = DateTime(m.year, m.month - i, 1);
-      var e = 0;
-      var inc = 0;
-      for (final b in allBills) {
-        final d = DateTime.fromMillisecondsSinceEpoch(b.dateMs);
-        if (d.year == mm.year && d.month == mm.month) {
-          if (b.type == 0) e += b.amount;
-          if (b.type == 1 && !internalCatIds.contains(b.categoryId)) {
-            inc += b.amount;
-          }
-        }
-      }
-      trend.add(_MonthSum(month: mm.month, expense: e, income: inc));
+      final summary = buildReport(
+        bills: allBills,
+        categories: categories,
+        filter: ReportFilter(
+          period: ReportPeriod.month(mm),
+          currency: currency,
+        ),
+      );
+      trend.add(
+        _MonthSum(
+          month: mm.month,
+          expense: summary.expense,
+          income: summary.income,
+        ),
+      );
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const MonthBar(),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const MonthBar(), centerTitle: true),
       body: ListView(
+        key: ValueKey('stats-${m.year}-${m.month}-$currency'),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),
         children: [
+          CurrencyFilter(bills: allBills),
           _CategoryPieCard(
-              entries: catEntries, catBy: catBy, totalExpense: totalExpense),
+            key: ValueKey('${m.year}-${m.month}-$currency'),
+            stats: report.expenseStats,
+            currency: currency,
+          ),
           const SizedBox(height: 12),
-          _TrendCard(trend: trend),
+          _TrendCard(trend: trend, currency: currency),
         ],
       ),
     );
@@ -78,26 +116,55 @@ class StatsPage extends ConsumerWidget {
 
 class _MonthSum {
   final int month;
-  final int expense;
-  final int income;
-  const _MonthSum(
-      {required this.month, required this.expense, required this.income});
+  final BigInt expense;
+  final BigInt income;
+  const _MonthSum({
+    required this.month,
+    required this.expense,
+    required this.income,
+  });
 }
 
-class _CategoryPieCard extends StatelessWidget {
+// Only chart geometry uses double; labels and percentages retain exact integers.
+double _chartValue(BigInt units, String code) {
+  final digits = Currency.tryFromCode(code)?.minorUnitDigits ?? 0;
+  return units.toDouble() / pow(10, digits);
+}
+
+String _percent(BigInt amount, BigInt total) => total == BigInt.zero
+    ? '0'
+    : ((amount * BigInt.from(100) + total ~/ BigInt.two) ~/ total).toString();
+
+class _CategoryPieCard extends StatefulWidget {
   const _CategoryPieCard({
-    required this.entries,
-    required this.catBy,
-    required this.totalExpense,
+    super.key,
+    required this.stats,
+    required this.currency,
   });
 
-  final List<MapEntry<String, int>> entries;
-  final Map<String, Category> catBy;
-  final int totalExpense;
+  final CategoryStats stats;
+  final String currency;
+
+  @override
+  State<_CategoryPieCard> createState() => _CategoryPieCardState();
+}
+
+class _CategoryPieCardState extends State<_CategoryPieCard> {
+  int? _touchedIndex;
+
+  @override
+  void didUpdateWidget(covariant _CategoryPieCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.stats != widget.stats) _touchedIndex = null;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final top = entries.take(10).toList();
+    final stats = widget.stats;
+    final currency = widget.currency;
+    final selected = _touchedIndex == null
+        ? null
+        : stats.groups[_touchedIndex!];
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -105,62 +172,97 @@ class _CategoryPieCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              spacing: 12,
+              runSpacing: 6,
               children: [
-                const Text('本月支出',
-                    style:
-                        TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-                const Spacer(),
-                Text('¥ ${centsToText(totalExpense)}',
-                    style: const TextStyle(
-                        fontSize: 17,
-                        fontWeight: FontWeight.bold,
-                        color: kExpenseColor)),
+                const Text(
+                  '本月支出',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+                Text(
+                  displayCurrencyAmount(stats.total, currency),
+                  key: const ValueKey('stats-expense-total'),
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                    color: kExpenseColor,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
-            if (totalExpense == 0)
+            if (stats.total == BigInt.zero)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 28),
                 child: Center(
-                    child: Text('本月暂无支出',
-                        style: TextStyle(color: Colors.grey))),
+                  child: Text('本月暂无支出', style: TextStyle(color: Colors.grey)),
+                ),
               )
             else
-              Row(
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  SizedBox(
-                    width: 140,
-                    height: 140,
-                    child: PieChart(PieChartData(
-                      centerSpaceRadius: 26,
-                      sectionsSpace: 2,
-                      sections: [
-                        for (var i = 0; i < top.length; i++)
-                          PieChartSectionData(
-                            value: top[i].value / 100,
-                            color: kPiePalette[i % kPiePalette.length],
-                            radius: 44,
-                            showTitle: false,
+                  Center(
+                    child: SizedBox(
+                      width: 160,
+                      height: 160,
+                      child: PieChart(
+                        PieChartData(
+                          centerSpaceRadius: 30,
+                          sectionsSpace: 2,
+                          pieTouchData: PieTouchData(
+                            touchCallback: (event, response) {
+                              final index =
+                                  response?.touchedSection?.touchedSectionIndex;
+                              if (index == null ||
+                                  index < 0 ||
+                                  index >= stats.groups.length) {
+                                return;
+                              }
+                              if (_touchedIndex != index) {
+                                setState(() => _touchedIndex = index);
+                              }
+                            },
                           ),
-                      ],
-                    )),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      children: [
-                        for (var i = 0; i < top.length; i++)
-                          _LegendRow(
-                            color: kPiePalette[i % kPiePalette.length],
-                            label:
-                                '${catBy[top[i].key]?.emoji ?? '📦'} ${catBy[top[i].key]?.name ?? '未分类'}',
-                            amount: top[i].value,
-                            percent: top[i].value / totalExpense * 100,
-                          ),
-                      ],
+                          sections: [
+                            for (var i = 0; i < stats.groups.length; i++)
+                              PieChartSectionData(
+                                value: _chartValue(
+                                  stats.groups[i].amount,
+                                  currency,
+                                ),
+                                color: kPiePalette[i % kPiePalette.length],
+                                radius: i == _touchedIndex ? 52 : 48,
+                                showTitle: false,
+                              ),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  if (selected != null)
+                    Text(
+                      '${selected.category?.name ?? '未分类'} · '
+                      '${displayCurrencyAmount(selected.amount, currency)}',
+                      key: const ValueKey('category-pie-tooltip'),
+                      textAlign: TextAlign.center,
+                    ),
+                  const Text(
+                    '按一级分类汇总，点开查看二级',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 4),
+                  for (var i = 0; i < stats.groups.length; i++)
+                    _CategoryGroupRow(
+                      key: ValueKey(stats.groups[i].category?.id),
+                      group: stats.groups[i],
+                      total: stats.total,
+                      currency: currency,
+                      color: kPiePalette[i % kPiePalette.length],
+                    ),
                 ],
               ),
           ],
@@ -170,18 +272,100 @@ class _CategoryPieCard extends StatelessWidget {
   }
 }
 
+class _CategoryGroupRow extends StatelessWidget {
+  const _CategoryGroupRow({
+    super.key,
+    required this.group,
+    required this.total,
+    required this.currency,
+    required this.color,
+  });
+
+  final CategoryStatGroup group;
+  final BigInt total;
+  final String currency;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final label =
+        '${group.category?.emoji ?? '📦'} ${group.category?.name ?? '未分类'}';
+    final title = Text(label, maxLines: 2, overflow: TextOverflow.ellipsis);
+    final subtitle = Text(
+      '${displayCurrencyAmount(group.amount, currency, prefix: false)} · '
+      '占本月 ${_percent(group.amount, total)}%',
+      style: const TextStyle(fontSize: 12, color: Colors.grey),
+    );
+    final dot = Container(
+      width: 8,
+      height: 8,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+    if (!group.hasChildren) {
+      return ListTile(
+        key: ValueKey(
+          'category-stats-${group.category?.id ?? 'uncategorized'}',
+        ),
+        contentPadding: EdgeInsets.zero,
+        minLeadingWidth: 8,
+        leading: dot,
+        title: title,
+        subtitle: subtitle,
+      );
+    }
+    return ExpansionTile(
+      key: ValueKey('category-stats-${group.category!.id}'),
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.fromLTRB(20, 0, 8, 12),
+      minTileHeight: 64,
+      leading: dot,
+      title: title,
+      subtitle: subtitle,
+      shape: const Border(),
+      collapsedShape: const Border(),
+      children: [
+        const Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            '分项金额 · 占本分类',
+            style: TextStyle(fontSize: 11, color: Colors.grey),
+          ),
+        ),
+        if (group.directAmount != BigInt.zero)
+          _LegendRow(
+            color: color,
+            label: '未细分',
+            amount: group.directAmount,
+            currency: currency,
+            percent: _percent(group.directAmount, group.amount),
+          ),
+        for (final child in group.children)
+          _LegendRow(
+            color: color,
+            label: '${child.category.emoji} ${child.category.name}',
+            amount: child.amount,
+            currency: currency,
+            percent: _percent(child.amount, group.amount),
+          ),
+      ],
+    );
+  }
+}
+
 class _LegendRow extends StatelessWidget {
   const _LegendRow({
     required this.color,
     required this.label,
     required this.amount,
+    required this.currency,
     required this.percent,
   });
 
   final Color color;
   final String label;
-  final int amount;
-  final double percent;
+  final BigInt amount;
+  final String currency;
+  final String percent;
 
   @override
   Widget build(BuildContext context) {
@@ -190,15 +374,28 @@ class _LegendRow extends StatelessWidget {
       child: Row(
         children: [
           Container(
-              width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
           const SizedBox(width: 6),
           Expanded(
-              child: Text(label,
-                  maxLines: 1,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13))),
-          Text('${centsToText(amount)} · ${percent.toStringAsFixed(0)}%',
-              style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                  style: const TextStyle(fontSize: 13),
+                ),
+                Text(
+                  '${displayCurrencyAmount(amount, currency, prefix: false)} · $percent%',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -206,16 +403,17 @@ class _LegendRow extends StatelessWidget {
 }
 
 class _TrendCard extends StatelessWidget {
-  const _TrendCard({required this.trend});
+  const _TrendCard({required this.trend, required this.currency});
 
   final List<_MonthSum> trend;
+  final String currency;
 
   @override
   Widget build(BuildContext context) {
     var maxVal = 0.0;
     for (final t in trend) {
-      maxVal = max(maxVal, t.expense / 100);
-      maxVal = max(maxVal, t.income / 100);
+      maxVal = max(maxVal, _chartValue(t.expense, currency));
+      maxVal = max(maxVal, _chartValue(t.income, currency));
     }
     if (maxVal == 0) maxVal = 1;
 
@@ -226,14 +424,16 @@ class _TrendCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              spacing: 10,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                const Text('近6个月收支趋势',
-                    style:
-                        TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-                const Spacer(),
+                const Text(
+                  '近6个月收支趋势',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                ),
                 _dot(kExpenseColor, '支出'),
-                const SizedBox(width: 10),
                 _dot(kIncomeColor, '收入'),
               ],
             ),
@@ -244,6 +444,22 @@ class _TrendCard extends StatelessWidget {
                 BarChartData(
                   alignment: BarChartAlignment.spaceAround,
                   maxY: maxVal * 1.25,
+                  barTouchData: BarTouchData(
+                    touchTooltipData: BarTouchTooltipData(
+                      maxContentWidth: 280,
+                      fitInsideHorizontally: true,
+                      fitInsideVertically: true,
+                      getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                        final item = trend[group.x];
+                        final expense = rodIndex == 0;
+                        return BarTooltipItem(
+                          '${item.month}月 ${expense ? '支出' : '收入'}\n'
+                          '${displayCurrencyAmount(expense ? item.expense : item.income, currency)}',
+                          const TextStyle(color: Colors.white, fontSize: 12),
+                        );
+                      },
+                    ),
+                  ),
                   barGroups: [
                     for (var i = 0; i < trend.length; i++)
                       BarChartGroupData(
@@ -251,13 +467,13 @@ class _TrendCard extends StatelessWidget {
                         barsSpace: 4,
                         barRods: [
                           BarChartRodData(
-                            toY: trend[i].expense / 100,
+                            toY: _chartValue(trend[i].expense, currency),
                             color: kExpenseColor,
                             width: 10,
                             borderRadius: BorderRadius.circular(3),
                           ),
                           BarChartRodData(
-                            toY: trend[i].income / 100,
+                            toY: _chartValue(trend[i].income, currency),
                             color: kIncomeColor,
                             width: 10,
                             borderRadius: BorderRadius.circular(3),
@@ -267,19 +483,24 @@ class _TrendCard extends StatelessWidget {
                   ],
                   titlesData: FlTitlesData(
                     leftTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
                     topTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
                     rightTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
                     bottomTitles: AxisTitles(
                       sideTitles: SideTitles(
                         showTitles: true,
                         reservedSize: 26,
                         getTitlesWidget: (v, meta) => SideTitleWidget(
                           meta: meta,
-                          child: Text('${trend[v.toInt()].month}月',
-                              style: const TextStyle(fontSize: 11)),
+                          child: Text(
+                            '${trend[v.toInt()].month}月',
+                            style: const TextStyle(fontSize: 11),
+                          ),
                         ),
                       ),
                     ),
@@ -297,11 +518,13 @@ class _TrendCard extends StatelessWidget {
 
   Widget _dot(Color c, String label) {
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+        ),
         const SizedBox(width: 4),
         Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
       ],

@@ -2,14 +2,44 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/app_database.dart';
-import '../data/presets.dart';
+import '../data/category_hierarchy.dart';
 import '../providers.dart';
 import '../theme.dart';
-import '../utils/money.dart';
+import '../utils/balance.dart';
+import '../utils/bill_money.dart';
+import '../utils/transfer_fee.dart';
 import 'edit_bill_page.dart';
 
-/// 账单详情页：**只读**展示一条账单，按下「修改」才进入编辑（需求 2026-10-06）。
-/// AA 伴生应收/结算账单等锁定项点「修改」后仍由编辑页的只读视图承载。
+/// Shared entry point for bills, account activity and future report details.
+/// Keep the sheet in the stack while editing so returning retains the list.
+Future<void> showBillDetailSheet({
+  required BuildContext context,
+  required Bill bill,
+}) {
+  FocusScope.of(context).unfocus();
+  return showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
+    backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
+    clipBehavior: Clip.antiAlias,
+    builder: (context) => Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: LayoutBuilder(
+        builder: (context, constraints) => ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: constraints.maxHeight * .85),
+          child: SafeArea(top: false, child: BillDetailPage(bill: bill)),
+        ),
+      ),
+    ),
+  );
+}
+
+/// 只读账单详情内容，按下「修改」才进入编辑。
+/// 结算收支仅允许修改本机账户 / 备注；旧转账及 AA 伴生应收保持只读。
 class BillDetailPage extends ConsumerWidget {
   const BillDetailPage({super.key, required this.bill});
 
@@ -17,10 +47,29 @@ class BillDetailPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    final billState = ref.watch(allBillsProvider);
+    if (billState.hasError) {
+      return _status(context, const Text('账单读取失败，请返回后重试'));
+    }
+    if (!billState.hasValue) {
+      return _status(context, const CircularProgressIndicator());
+    }
+    Bill? latest;
+    for (final b in billState.value!) {
+      if (b.id == this.bill.id) {
+        latest = b;
+        break;
+      }
+    }
+    if (latest == null) {
+      return _status(context, const Text('账单已删除或不存在'));
+    }
+    // 展示和再次编辑使用同一份最新记录，构造参数只提供稳定 ID。
+    final bill = latest;
+    final accountState = ref.watch(accountsProvider);
+    final accounts = accountState.value ?? const <Account>[];
     final categories =
         ref.watch(categoriesProvider).value ?? const <Category>[];
-    final meta = ref.watch(metaProvider).value ?? const <String, String>{};
 
     Account? acc;
     for (final a in accounts) {
@@ -40,58 +89,176 @@ class BillDetailPage extends ConsumerWidget {
     }
     final isAa = bill.aaGroupId != null || bill.isAa;
     final isSettlement = bill.settlementId != null;
+    // 包括已取消费用；active 账单流无法证明转账没有手续费历史。
+    final feeState = bill.type == 2
+        ? ref.watch(transferFeeProvider(bill.id))
+        : null;
+    final feeReady =
+        feeState != null &&
+        !billState.isLoading &&
+        feeState.hasValue &&
+        !feeState.isLoading &&
+        !feeState.hasError &&
+        accountState.hasValue &&
+        !accountState.isLoading &&
+        !accountState.hasError;
+    final feeManageable =
+        feeReady &&
+        canManageTransferFee(bill, feeState.value, {
+          for (final account in accounts) account.id: account,
+        });
+    // 旧 AA / 结算转账继续进入原有锁定详情，不能开放费用维护。
+    final legacyLockedTransfer =
+        bill.type == 2 &&
+        feeReady &&
+        feeState.value == null &&
+        (isAa || isSettlement);
+    final feeReadOnly =
+        bill.feeTransferId != null ||
+        bill.feeDeletedWithTransferAt != null ||
+        (bill.type == 2 && !feeManageable && !legacyLockedTransfer);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('账单详情'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                  builder: (_) => EditBillPage(bill: bill)),
-            ),
-            child: const Text('修改'),
-          ),
-        ],
-      ),
-      body: ListView(
+    return _frame(
+      context,
+      onEdit: feeReadOnly
+          ? null
+          : () {
+              if (ModalRoute.of(context)?.isCurrent != true) return;
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => EditBillPage(bill: bill),
+                ),
+              );
+            },
+      child: SingleChildScrollView(
+        key: const ValueKey('bill-detail-scroll'),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-        children: [
-          _amountCard(acc, toAcc),
-          const SizedBox(height: 12),
-          _infoCard(cat, acc, toAcc, meta, isAa, isSettlement),
-        ],
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _amountCard(bill, acc, toAcc),
+            const SizedBox(height: 12),
+            _infoCard(
+              bill,
+              cat,
+              CategoryHierarchy(categories).pathOf(bill.categoryId),
+              acc,
+              toAcc,
+              isAa,
+              isSettlement,
+              feeState?.value,
+              feeManageable,
+            ),
+            if (bill.feeTransferId != null ||
+                bill.feeDeletedWithTransferAt != null ||
+                (bill.type == 2 && feeReady && !feeManageable))
+              const Padding(
+                padding: EdgeInsets.only(top: 12),
+                child: Text('手续费需随转账统一修改'),
+              ),
+          ],
+        ),
       ),
     );
   }
 
-  Color get _amountColor => bill.type == 0
-      ? kExpenseColor
-      : (bill.type == 1 ? kIncomeColor : Colors.black87);
+  Widget _status(BuildContext context, Widget child) => _frame(
+    context,
+    child: SingleChildScrollView(
+      key: const ValueKey('bill-detail-scroll'),
+      padding: const EdgeInsets.all(32),
+      child: Center(heightFactor: 1, child: child),
+    ),
+  );
 
-  String get _typeLabel =>
-      bill.type == 0 ? '支出' : (bill.type == 1 ? '收入' : '转账');
+  Widget _frame(
+    BuildContext context, {
+    required Widget child,
+    VoidCallback? onEdit,
+  }) => Column(
+    key: const ValueKey('bill-detail-sheet'),
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SizedBox(
+        height: 24,
+        child: Center(
+          child: Container(
+            width: 36,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.outlineVariant,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(left: 20, right: 8, bottom: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                '账单详情',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+            ),
+            if (onEdit != null)
+              TextButton(onPressed: onEdit, child: const Text('修改')),
+            IconButton(
+              tooltip: '关闭详情',
+              onPressed: () {
+                if (ModalRoute.of(context)?.isCurrent != true) return;
+                Navigator.of(context).pop();
+              },
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        ),
+      ),
+      Flexible(fit: FlexFit.loose, child: child),
+    ],
+  );
 
-  Widget _amountCard(Account? acc, Account? toAcc) {
-    final sign = bill.type == 0 ? '-' : (bill.type == 1 ? '+' : '');
+  Widget _amountCard(Bill bill, Account? acc, Account? toAcc) {
+    final amountColor = bill.type == 0
+        ? kExpenseColor
+        : (bill.type == 1 ? kIncomeColor : Colors.black87);
+    final typeLabel = switch (bill.type) {
+      0 => '支出',
+      1 => '收入',
+      2 => '转账',
+      _ => '余额调节',
+    };
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: _amountColor.withValues(alpha: 0.10),
+        color: amountColor.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(14),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(_typeLabel,
-              style: const TextStyle(fontSize: 13, color: Colors.grey)),
+          Text(
+            typeLabel,
+            style: const TextStyle(fontSize: 13, color: Colors.grey),
+          ),
           const SizedBox(height: 6),
-          Text('$sign¥ ${centsToText(bill.amount)}',
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Text(
+              displayBillAmount(bill, prefix: true),
               style: TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                  color: _amountColor)),
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: amountColor,
+              ),
+            ),
+          ),
           const SizedBox(height: 6),
           Text(
             bill.type == 2
@@ -104,18 +271,82 @@ class BillDetailPage extends ConsumerWidget {
     );
   }
 
-  Widget _infoCard(Category? cat, Account? acc, Account? toAcc,
-      Map<String, String> meta, bool isAa, bool isSettlement) {
+  Widget _infoCard(
+    Bill bill,
+    Category? cat,
+    String categoryPath,
+    Account? acc,
+    Account? toAcc,
+    bool isAa,
+    bool isSettlement,
+    Bill? fee,
+    bool feeManageable,
+  ) {
     final d = DateTime.fromMillisecondsSinceEpoch(bill.dateMs);
     String two(int v) => v.toString().padLeft(2, '0');
+    final incoming = transferIncomingAmount(bill, {
+      for (final account in [acc, toAcc].whereType<Account>())
+        account.id: account,
+    });
+    final feeAmount = fee?.deletedAt == null ? fee?.amount ?? 0 : 0;
 
     final rows = <Widget>[
-      _row('分类', cat == null ? '—' : '${cat.emoji} ${cat.name}'),
+      _row('交易币种', bill.currency.trim().isEmpty ? '未知币种' : bill.currency),
+      _row('分类', cat == null ? categoryPath : '${cat.emoji} $categoryPath'),
       _row('账户', acc == null ? '—' : '${acc.emoji} ${acc.name}'),
-      if (bill.type == 2)
+      if (bill.type == 2) ...[
+        _row(
+          '转出金额',
+          acc == null
+              ? '待确认（出账账户缺失）'
+              : displayCurrencyAmount(
+                  BigInt.from(bill.accountAmount),
+                  acc.currency,
+                ),
+        ),
         _row('转入账户', toAcc == null ? '—' : '${toAcc.emoji} ${toAcc.name}'),
-      _row('时间',
-          '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}'),
+        _row(
+          '转入金额',
+          incoming == null
+              ? '待确认（缺少有效入账金额）'
+              : displayCurrencyAmount(BigInt.from(incoming), toAcc!.currency),
+        ),
+        _row(
+          '手续费',
+          !feeManageable
+              ? '待确认（手续费关联或账户未就绪）'
+              : '${displayCurrencyAmount(BigInt.from(feeAmount), bill.currency)}${fee?.deletedAt != null ? '（已取消）' : ''}',
+        ),
+        _row(
+          '总扣款',
+          !feeManageable
+              ? '待确认'
+              : displayCurrencyAmount(
+                  BigInt.from(bill.accountAmount) + BigInt.from(feeAmount),
+                  bill.currency,
+                ),
+        ),
+      ] else if (acc == null ||
+          acc.currency != bill.currency ||
+          bill.accountAmount != bill.amount)
+        _row(
+          bill.type == 0
+              ? '实际扣款'
+              : bill.type == 1
+              ? '实际入账'
+              : '账户变动',
+          acc == null
+              ? '待确认（账户缺失）'
+              : displayCurrencyAmount(
+                  BigInt.from(bill.accountAmount),
+                  acc.currency,
+                  signed: bill.type == 3,
+                ),
+        ),
+      _row(
+        '时间',
+        '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}',
+      ),
       _row('备注', bill.note.isEmpty ? '—' : bill.note),
       if (isAa) _row('AA', 'AA 平分账单（修改需同步给伙伴重新确认）'),
       if (isSettlement) _row('结算', 'AA 结算生成的收支明细'),
@@ -137,13 +368,17 @@ class BillDetailPage extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-              width: 72,
-              child: Text(label,
-                  style: const TextStyle(fontSize: 13, color: Colors.grey))),
+            width: 72,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+          ),
           Expanded(
-            child: Text(value,
-                style: const TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w500)),
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+            ),
           ),
         ],
       ),

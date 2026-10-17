@@ -94,7 +94,7 @@ void main() {
           '"created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL, '
           '"deleted_at" INTEGER NULL)');
       raw.execute('PRAGMA user_version = 1');
-      raw.dispose();
+      raw.close();
 
       final db2 = DbWithExecutor(NativeDatabase(File(path)));
       // 迁移后新表可用
@@ -122,7 +122,7 @@ void main() {
       // bills 新增的 settlement_id 列可写可查
       await db2.upsertBill(
         id: 'b1',
-        type: 2,
+        type: 1,
         amount: 500,
         accountId: 'acc_cash',
         dateMs: 5,
@@ -244,6 +244,31 @@ void main() {
       await db.softDeleteBill('in2');
       final bills = await db.watchBillsOfRange(100, 200).first;
       expect(bills.map((b) => b.id), ['in1']);
+    });
+
+    test('watchBillsOfRange 相邻区间各含起点但不含终点，空区间不返回账单', () async {
+      for (final dateMs in [99, 100, 150, 199, 200, 201]) {
+        await db.upsertBill(
+          id: 'boundary-$dateMs',
+          type: 0,
+          amount: 1,
+          accountId: 'acc_cash',
+          dateMs: dateMs,
+        );
+      }
+      await db.softDeleteBill('boundary-150');
+
+      final first = await db.watchBillsOfRange(100, 200).first;
+      final adjacent = await db.watchBillsOfRange(200, 300).first;
+      expect(first.map((b) => b.id), ['boundary-199', 'boundary-100']);
+      expect(adjacent.map((b) => b.id), ['boundary-201', 'boundary-200']);
+      expect(
+        first.map((b) => b.id).toSet().intersection(
+              adjacent.map((b) => b.id).toSet(),
+            ),
+        isEmpty,
+      );
+      expect(await db.watchBillsOfRange(200, 200).first, isEmpty);
     });
 
     test('findSimilarBills：同类型同金额同日命中，可排除自身/软删除', () async {
@@ -432,15 +457,12 @@ void main() {
       expect(watched.map((s) => s.id).toList(), ['s2', 's1']);
 
       expect(await db.hasSettlementBill('s1'), isFalse);
-      await db.upsertBill(
-        id: 'sb',
-        type: 2,
-        amount: 100,
-        accountId: 'acc_cash',
-        toAccountId: 'acc_bank',
-        dateMs: 1,
-        settlementId: 's1',
-      );
+      // 历史结算转账仍可查询；新写入已禁止该关联组合。
+      await db.customStatement('''
+INSERT INTO bills (id, type, amount, currency, account_amount,
+  account_id, to_account_id, date_ms, settlement_id, created_at, updated_at)
+VALUES ('sb', 2, 100, 'CNY', 100, 'acc_cash', 'acc_bank', 1, 's1', 1, 1)
+''');
       expect(await db.hasSettlementBill('s1'), isTrue);
     });
   });

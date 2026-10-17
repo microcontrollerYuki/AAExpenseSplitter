@@ -5,6 +5,7 @@ import '../providers.dart';
 import '../theme.dart';
 import 'accounts_page.dart';
 import 'categories_page.dart';
+import 'exchange_rates_page.dart';
 
 /// 我的页：账户入口 + M2+ 功能占位 + 隐私说明 + 测试后门
 class MinePage extends ConsumerWidget {
@@ -43,6 +44,14 @@ class MinePage extends ConsumerWidget {
                           builder: (_) => const CategoriesPage())),
                 ),
                 ListTile(
+                  leading: const Icon(Icons.currency_exchange),
+                  title: const Text('汇率设置'),
+                  subtitle: const Text('联网参考汇率 · 手动覆盖'),
+                  onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => const ExchangeRatesPage(),
+                  )),
+                ),
+                ListTile(
                   leading: const Icon(Icons.savings_outlined),
                   title: const Text('预算'),
                   subtitle: const Text('月总预算与分类预算'),
@@ -74,7 +83,7 @@ class MinePage extends ConsumerWidget {
                 ListTile(
                   leading: const Icon(Icons.lock_outline),
                   title: const Text('隐私说明'),
-                  subtitle: const Text('当前版本所有数据仅保存在本机数据库，不上传任何服务器'),
+                  subtitle: const Text('账本数据仅保存在本机；联网汇率仅请求币种，不上传账单、账户或备注'),
                 ),
                 ListTile(
                   leading: const Icon(Icons.info_outline),

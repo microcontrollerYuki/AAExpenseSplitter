@@ -1,0 +1,93 @@
+import '../data/app_database.dart';
+import '../data/presets.dart';
+import 'currency.dart';
+
+const noEntryAccountMessage = '暂无可用账户，请先在「账本」中创建';
+const staleEntryAccountMessage = '所选账户已变化，请重新选择账户';
+
+/// 本人转账可使用支持币种的真实钱包，不能使用任何 AA 挂账账户。
+List<Account> transferEntryAccounts(Iterable<Account> accounts) => accounts
+    .where(
+      (account) =>
+          Currency.tryFromCode(account.currency) != null &&
+          account.type != 4 &&
+          account.id != kAaCreditAccountId,
+    )
+    .toList();
+
+/// 新转账优先同币目标；仅有跨币钱包时也可选择。显式失效不换绑。
+String? transferTargetAccountId(
+  List<Account> accounts,
+  String? selectedId,
+  String? sourceId,
+) {
+  if (selectedId != null) return entryAccountId(accounts, selectedId);
+  final source = accounts.where((a) => a.id == sourceId).firstOrNull;
+  for (final account in accounts) {
+    if (account.id != sourceId && account.currency == source?.currency) {
+      return account.id;
+    }
+  }
+  return entryAccountId(accounts, null, excludeDefaultId: sourceId);
+}
+
+/// 普通收支可选各支持币种钱包；AA 挂账只用于人民币交易。
+List<Account> bookkeepingEntryAccounts(
+  Iterable<Account> accounts,
+  Currency currency, {
+  bool cnyOnly = false,
+}) => accounts.where((account) {
+  if (Currency.tryFromCode(account.currency) == null) return false;
+  if (cnyOnly && account.currency != 'CNY') return false;
+  if (account.type == 4 || account.id == kAaCreditAccountId) {
+    return account.id == kAaCreditAccountId && currency == Currency.cny;
+  }
+  return true;
+}).toList();
+
+String? bookkeepingAccountId(
+  List<Account> accounts,
+  String? selectedId,
+  Currency currency,
+) {
+  if (selectedId != null) return entryAccountId(accounts, selectedId);
+  for (final account in accounts) {
+    if (account.currency == currency.code) return account.id;
+  }
+  return entryAccountId(accounts, null);
+}
+
+const noCnyAccountMessage = '暂无可用人民币账户，请先在「账本」中创建';
+const staleCnyAccountMessage = '所选账户已变化，请重新选择人民币账户';
+
+/// 既有 AA / 结算仍限 CNY；结算仅接受真实钱包。
+List<Account> cnyEntryAccounts(
+  Iterable<Account> accounts, {
+  bool includeAaCredit = true,
+}) => accounts
+    .where(
+      (account) =>
+          account.currency == 'CNY' &&
+          ((account.type != 4 && account.id != kAaCreditAccountId) ||
+              (includeAaCredit && account.id == kAaCreditAccountId)),
+    )
+    .toList();
+
+/// 显式选择失效时返回空，必须由用户重选，不能静默换成默认账户。
+/// 尚未选择时采用默认账户；默认转入账户排除默认转出账户。
+/// 显式选到相同账户交由原有保存校验提示，不在后台静默换选。
+String? entryAccountId(
+  List<Account> accounts,
+  String? selectedId, {
+  String? excludeDefaultId,
+}) {
+  if (selectedId != null) {
+    return accounts.any((account) => account.id == selectedId)
+        ? selectedId
+        : null;
+  }
+  for (final account in accounts) {
+    if (account.id != excludeDefaultId) return account.id;
+  }
+  return null;
+}
