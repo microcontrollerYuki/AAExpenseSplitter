@@ -1,5 +1,6 @@
 // 测试公共设施：内存数据库、假 PathProvider、本地化 MaterialApp 包装。
 // 被 @visibleForTesting 之外的业务代码依赖，仅测试目录引用。
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -23,6 +24,7 @@ import 'package:share_plus_platform_interface/share_plus_platform_interface.dart
     as spi;
 
 import 'package:aa_expense_splitter/data/app_database.dart';
+import 'package:aa_expense_splitter/exchange/exchange_rate.dart';
 import 'package:aa_expense_splitter/exchange/exchange_rate_service.dart';
 import 'package:aa_expense_splitter/exchange/transfer_rate_prefill.dart';
 import 'package:aa_expense_splitter/providers.dart';
@@ -152,20 +154,69 @@ class NullTransferRatePrefill implements TransferRatePrefill {
   void removeListener(VoidCallback listener) {}
 }
 
+/// 固定缓存的汇率存储：读取恒返回同一份新鲜完整快照，从不写入，
+/// 让页面测试的共享汇率服务完全不触网且数值确定。
+class StaticRateStore implements RateStore {
+  StaticRateStore();
+
+  static String? _cache;
+
+  static String _buildCache() {
+    final now = DateTime.now().toUtc();
+    final snapshot = NetworkRateSnapshot(
+      quotedAt: DateTime.utc(now.year, now.month, now.day),
+      fetchedAt: now,
+      // EUR 基准的参考价，使交叉汇率恰为整数倍：
+      // USD→CNY = 7.7/1.1 = 7，JPY→CNY = 7.7/154 = 0.05，
+      // HKD→CNY = 0.77，GBP→CNY = 11。
+      rates: {
+        Currency.eur: RateRatio.parse('1'),
+        Currency.usd: RateRatio.parse('1.1'),
+        Currency.cny: RateRatio.parse('7.7'),
+        Currency.hkd: RateRatio.parse('10'),
+        Currency.jpy: RateRatio.parse('154'),
+        Currency.gbp: RateRatio.parse('0.7'),
+      },
+    );
+    return jsonEncode({
+      'version': 1,
+      'network': snapshot.toJson(),
+      'manual': <Object>[],
+    });
+  }
+
+  @override
+  Future<String?> read() async => _cache ??= _buildCache();
+
+  @override
+  Future<void> write(String value) async {}
+}
+
+/// pumpPage 默认注入的确定性共享汇率服务：缓存始终新鲜，initialize 不会
+/// 联网，quote() 返回固定比例（USD/HKD/JPY/GBP → CNY 如上）。
+ExchangeRateService defaultRateService() =>
+    ExchangeRateService(store: StaticRateStore());
+
 /// 把页面装进 ProviderScope（内存库）+ 本地化壳，泵一帧。
 /// 返回实际使用的数据库，测试结尾须调用 [disposePage] 卸载并关闭，
 /// 否则 drift watch 流的 pending timer 会让 testWidgets 报错
 /// [overrides] 元素须为 riverpod 的 override 表达式（riverpod 3 不再公开
 /// Override 类型，这里以 List<dynamic> 传递）
 /// [transferRates] 覆盖 C-13 转账汇率预填入口；缺省为惰性实现。
+/// [rateService] 覆盖共享汇率服务本身（缺省为固定缓存的确定性服务）；
+/// 需要缺率 / 过期等特殊状态时构造自定义服务传入。
 Future<AppDatabase> pumpPage(
   WidgetTester tester,
   Widget page, {
   AppDatabase? db,
   List<dynamic> overrides = const [],
   TransferRatePrefill? transferRates,
+  ExchangeRateService? rateService,
 }) async {
   final database = db ?? TestAppDatabase();
+  final rates = transferRates;
+  final defaultRates = rateService ?? defaultRateService();
+  addTearDown(defaultRates.dispose);
   addTearDown(() => disposePage(tester, database));
   await tester.pumpWidget(
     ProviderScope(
@@ -174,8 +225,9 @@ Future<AppDatabase> pumpPage(
       overrides: [
         databaseProvider.overrideWithValue(database),
         transferRatePrefillProvider.overrideWithValue(
-          transferRates ?? NullTransferRatePrefill(),
+          rates ?? NullTransferRatePrefill(),
         ),
+        exchangeRateServiceProvider.overrideWithValue(defaultRates),
         ...overrides,
       ],
       child: localizedApp(page),

@@ -36,14 +36,19 @@ class CategoryStats {
   final List<CategoryStatGroup> groups;
 }
 
-/// Aggregates one transaction currency in exact integer minor units. Each bill
-/// belongs to one root and either its direct amount or one child, never both.
-/// The shared hierarchy keeps malformed old nodes bounded and read-only.
+/// Aggregates one transaction currency in exact integer minor units, or —
+/// with [currency] null — every currency at once (CNY conversion views).
+/// Each bill belongs to one root and either its direct amount or one child,
+/// never both. The shared hierarchy keeps malformed old nodes bounded and
+/// read-only. [amountOf] replaces the stored amount (CNY conversion passes
+/// the R-09 per-bill value); bills without a lookup value must be filtered
+/// out by the caller.
 CategoryStats aggregateCategoryStats({
   required Iterable<Bill> bills,
   required Iterable<Category> categories,
   required int type,
-  String currency = 'CNY',
+  String? currency = 'CNY',
+  BigInt Function(Bill bill)? amountOf,
 }) {
   if (type != 0 && type != 1) {
     throw ArgumentError.value(
@@ -65,7 +70,8 @@ CategoryStats aggregateCategoryStats({
   )) {
     final category = byId[bill.categoryId];
     final root = hierarchy.rootOf(category?.id);
-    final amount = BigInt.from(bill.amount);
+    final amount =
+        amountOf?.call(bill) ?? BigInt.from(bill.amount);
     totals[root?.id] = (totals[root?.id] ?? BigInt.zero) + amount;
     total += amount;
     if (root == null || root.id == category!.id) {

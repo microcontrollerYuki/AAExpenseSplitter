@@ -119,9 +119,10 @@ void main() {
 
     await _chooseMonth(tester, container, DateTime(year - 1, 12));
     expect(container.read(selectedMonthProvider), DateTime(year - 1, 12, 1));
-    _expectSummary('收入', '+40.00');
-    _expectSummary('支出', '30.00');
-    _expectSummary('结余', '+10.00');
+    // 默认总览（折合 CNY）：纯 CNY 数据金额不变，摘要带 ¥ 前缀。
+    _expectSummary('收入', '+¥ 40.00');
+    _expectSummary('支出', '¥ 30.00');
+    _expectSummary('结余', '+¥ 10.00');
     expect(find.text('十二月最后一毫秒'), findsOneWidget);
     expect(find.text('一月零点收入'), findsNothing);
 
@@ -147,9 +148,9 @@ void main() {
 
     await tester.tap(find.text('明细'));
     await settleProviders(tester);
-    _expectSummary('收入', '+70.00');
-    _expectSummary('支出', '5.00');
-    _expectSummary('结余', '+65.00');
+    _expectSummary('收入', '+¥ 70.00');
+    _expectSummary('支出', '¥ 5.00');
+    _expectSummary('结余', '+¥ 65.00');
     expect(find.text('一月零点收入'), findsOneWidget);
     expect(find.text('十二月最后一毫秒'), findsNothing);
 

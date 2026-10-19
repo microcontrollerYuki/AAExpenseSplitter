@@ -139,9 +139,11 @@ void main() {
     );
     final before = await _snapshot(db);
     await pumpPage(tester, const StatsPage(), db: db);
-    expect(_total(tester), '¥ 10.00');
-    expect(_trend(tester).data.barGroups.last.barRods.first.toY, 10);
-    expect(_trend(tester).data.barGroups.last.barRods.last.toY, 20);
+    // 默认总览折合 CNY：支出 10 + 10×7 + 1000×0.05 = ¥130.00；
+    // 收入 20 + 20×7 + 2000×0.05 = ¥260.00（USD 1000分=10 USD）。
+    expect(_total(tester), '¥ 130.00');
+    expect(_trend(tester).data.barGroups.last.barRods.first.toY, 130);
+    expect(_trend(tester).data.barGroups.last.barRods.last.toY, 260);
     await tester.tap(find.byKey(const ValueKey('category-stats-cat_food')));
     await settleProviders(tester);
     expect(find.text('分项金额 · 占本分类'), findsOneWidget);
@@ -242,7 +244,8 @@ void main() {
     );
     await _bill(db, 'cny-income', type: 1, amount: 500);
     await pumpPage(tester, const StatsPage(), db: db);
-    expect(_trend(tester).data.barGroups.last.barRods.last.toY, 5);
+    // 默认总览：USD 收入 20×7 = ¥140 + CNY ¥5 = ¥145。
+    expect(_trend(tester).data.barGroups.last.barRods.last.toY, 145);
     await _select(tester, '美元 USD');
     expect(_total(tester), 'USD 10.00');
     final chart = _trend(tester);

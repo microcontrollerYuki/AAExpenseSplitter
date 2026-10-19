@@ -1,23 +1,29 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/app_database.dart';
 import '../providers.dart';
 import '../utils/currency.dart';
 
 /// Only changes the displayed statistics; stored amounts are never converted.
-class CurrencyFilter extends ConsumerWidget {
-  const CurrencyFilter({super.key, required this.bills});
+/// [view] / [onSelect] carry the page's own [ReportViewCurrency] state so the
+/// two report pages stay independent.
+class CurrencyFilter extends StatelessWidget {
+  const CurrencyFilter({
+    super.key,
+    required this.bills,
+    required this.view,
+    required this.onSelect,
+  });
 
   final Iterable<Bill> bills;
+  final ReportViewCurrency view;
+  final void Function(ReportViewCurrency view) onSelect;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final selected = ref.watch(selectedCurrencyProvider);
+  Widget build(BuildContext context) {
     final codes = {
       for (final currency in Currency.values) currency.code,
       for (final bill in bills) bill.currency,
-      selected,
     };
     String label(String code) {
       final currency = Currency.tryFromCode(code);
@@ -38,23 +44,34 @@ class CurrencyFilter extends ConsumerWidget {
           Expanded(
             child: Align(
               alignment: Alignment.centerRight,
-              child: PopupMenuButton<String>(
+              child: PopupMenuButton<Object>(
                 key: const ValueKey('currency-filter'),
                 tooltip: '选择统计币种',
-                initialValue: selected,
-                onSelected: ref
-                    .read(selectedCurrencyProvider.notifier)
-                    .selectCurrency,
+                initialValue: view,
+                onSelected: (selected) {
+                  if (selected is ReportViewCurrency) onSelect(selected);
+                },
                 itemBuilder: (_) => [
+                  const PopupMenuItem(
+                    value: ReportViewCurrency.converted(),
+                    child: Text('总览 · 折合 CNY'),
+                  ),
                   for (final code in codes)
-                    PopupMenuItem(value: code, child: Text(label(code))),
+                    PopupMenuItem(
+                      value: ReportViewCurrency.original(code),
+                      child: Text(label(code)),
+                    ),
                 ],
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Flexible(child: Text(label(selected))),
+                      Flexible(
+                        child: Text(
+                          view.isConverted ? '总览 · 折合 CNY' : label(view.code!),
+                        ),
+                      ),
                       const Icon(Icons.arrow_drop_down),
                     ],
                   ),

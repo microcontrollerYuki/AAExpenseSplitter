@@ -54,8 +54,13 @@ void main() {
     expect(find.textContaining('交通'), findsOneWidget);
     expect(find.textContaining('未分类'), findsOneWidget);
     expect(find.text('6.00 · 占本月 4%'), findsOneWidget);
-    // 候选 chip 值与趋势卡
+    // 候选 chip 值与趋势卡（提示行增加高度后趋势卡需滚动至视口内构建）
     expect(find.byType(PieChart), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('近6个月收支趋势'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('近6个月收支趋势'), findsOneWidget);
 
     await disposePage(tester, db);

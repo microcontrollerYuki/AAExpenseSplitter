@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'data/app_database.dart';
@@ -58,18 +60,72 @@ final selectedMonthProvider = NotifierProvider<SelectedMonthNotifier, DateTime>(
   SelectedMonthNotifier.new,
 );
 
-/// Shared display currency for monthly summaries and existing charts.
-/// Bills remain visible in their original currency; this never converts money.
-class SelectedCurrencyNotifier extends Notifier<String> {
-  @override
-  String build() => 'CNY';
+/// 统计视图：折合 CNY 总览（code 为 null，经 R-09 折算模型取值）或某一原币。
+/// 明细 / 图表两页各自持有独立状态，互不影响；切换不改动月份与分类筛选。
+class ReportViewCurrency {
+  const ReportViewCurrency.converted() : code = null;
+  const ReportViewCurrency.original(this.code);
 
-  void selectCurrency(String code) => state = code;
+  final String? code;
+
+  bool get isConverted => code == null;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ReportViewCurrency && other.code == code;
+
+  @override
+  int get hashCode => code.hashCode;
 }
 
-final selectedCurrencyProvider =
-    NotifierProvider<SelectedCurrencyNotifier, String>(
-      SelectedCurrencyNotifier.new,
+class BillsViewNotifier extends Notifier<ReportViewCurrency> {
+  @override
+  ReportViewCurrency build() => const ReportViewCurrency.converted();
+
+  void select(ReportViewCurrency view) {
+    if (state != view) state = view;
+  }
+}
+
+class StatsViewNotifier extends Notifier<ReportViewCurrency> {
+  @override
+  ReportViewCurrency build() => const ReportViewCurrency.converted();
+
+  void select(ReportViewCurrency view) {
+    if (state != view) state = view;
+  }
+}
+
+final billsViewProvider = NotifierProvider<BillsViewNotifier, ReportViewCurrency>(
+  BillsViewNotifier.new,
+);
+
+final statsViewProvider = NotifierProvider<StatsViewNotifier, ReportViewCurrency>(
+  StatsViewNotifier.new,
+);
+
+/// 首次访问即触发缓存读取（过期或缺失时自动联网一次；幂等）。
+final exchangeRateReadyProvider = Provider<ExchangeRateService>((ref) {
+  final service = ref.watch(exchangeRateServiceProvider);
+  unawaited(service.initialize());
+  return service;
+});
+
+/// 服务每发布一次新状态自增的版本号：报表页 watch 它以在联网刷新完成后重建。
+class ExchangeRateVersionNotifier extends Notifier<int> {
+  @override
+  int build() {
+    final service = ref.watch(exchangeRateReadyProvider);
+    void onChanged() => state++;
+    service.addListener(onChanged);
+    ref.onDispose(() => service.removeListener(onChanged));
+    return 0;
+  }
+}
+
+final exchangeRateVersionProvider =
+    NotifierProvider<ExchangeRateVersionNotifier, int>(
+      ExchangeRateVersionNotifier.new,
     );
 
 final accountsProvider = StreamProvider<List<Account>>(

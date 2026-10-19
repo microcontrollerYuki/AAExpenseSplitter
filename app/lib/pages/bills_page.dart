@@ -9,20 +9,26 @@ import '../utils/balance.dart';
 import '../utils/bill_money.dart';
 import '../utils/money.dart';
 import '../utils/report.dart';
+import '../utils/report_conversion.dart';
 import '../utils/transfer_fee.dart';
 import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
+import '../widgets/report_view_hint.dart';
 import 'accounts_page.dart';
 import 'bill_detail_page.dart';
 
 /// 明细页（首页）：月份切换 + 月结余摘要 + 按日分组的账单流
+/// 月摘要默认折合 CNY（R-09 折算模型），可切到任一原币视图；账单列表
+/// 始终全币种原币展示，切换只影响摘要与按日支出小计。
 class BillsPage extends ConsumerWidget {
   const BillsPage({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final month = ref.watch(selectedMonthProvider);
-    final currency = ref.watch(selectedCurrencyProvider);
+    final view = ref.watch(billsViewProvider);
+    final rateService = ref.watch(exchangeRateReadyProvider);
+    ref.watch(exchangeRateVersionProvider);
     final billsAsync = ref.watch(monthBillsProvider);
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final categoriesAsync = ref.watch(categoriesProvider);
@@ -30,14 +36,45 @@ class BillsPage extends ConsumerWidget {
     final accBy = {for (final a in accounts) a.id: a};
     final catBy = {for (final c in categories) c.id: c};
 
-    final totals = buildReport(
-      bills: billsAsync.value ?? const <Bill>[],
-      categories: categories,
-      filter: ReportFilter(
-        period: ReportPeriod.month(month),
-        currency: currency,
-      ),
-    );
+    final monthBills = billsAsync.value ?? const <Bill>[];
+    final period = ReportPeriod.month(month);
+
+    BigInt income;
+    BigInt expense;
+    FrozenCnyQuotes? frozen;
+    List<CnyExcludedCurrency> excluded = const [];
+    List<Bill> convertedSelection = const [];
+    CnyConvertedBills? converted;
+    if (view.isConverted) {
+      frozen = FrozenCnyQuotes.capture(rateService.quote);
+      convertedSelection = filterReportBills(
+        bills: monthBills,
+        categories: categories,
+        filter: ReportFilter.allCurrencies(period: period),
+      );
+      converted = CnyConvertedBills.convert(
+        bills: convertedSelection,
+        quotes: frozen,
+      );
+      excluded = converted.excludedView;
+      income = converted.sumFor(
+        convertedSelection.where((b) => b.type == 1).toList(),
+      );
+      expense = converted.sumFor(
+        convertedSelection.where((b) => b.type == 0).toList(),
+      );
+    } else {
+      final totals = buildReport(
+        bills: monthBills,
+        categories: categories,
+        filter: ReportFilter(
+          period: period,
+          currency: view.code!,
+        ),
+      );
+      income = totals.income;
+      expense = totals.expense;
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -54,7 +91,13 @@ class BillsPage extends ConsumerWidget {
       ),
       body: Column(
         children: [
-          CurrencyFilter(bills: billsAsync.value ?? const <Bill>[]),
+          CurrencyFilter(
+            bills: monthBills,
+            view: view,
+            onSelect: ref.read(billsViewProvider.notifier).select,
+          ),
+          if (view.isConverted)
+            ReportViewHint(quotes: frozen!, excluded: excluded),
           categoriesAsync.when(
             loading: () => const SizedBox(
               height: 72,
@@ -70,9 +113,10 @@ class BillsPage extends ConsumerWidget {
                     billsAsync.hasError)
                 ? const SizedBox(height: 72)
                 : _MonthSummary(
-                    income: totals.income,
-                    expense: totals.expense,
-                    currency: currency,
+                    income: income,
+                    expense: expense,
+                    currency: view.isConverted ? 'CNY' : view.code!,
+                    converted: view.isConverted,
                   ),
           ),
           Expanded(
@@ -97,18 +141,35 @@ class BillsPage extends ConsumerWidget {
                     final d = DateTime.fromMillisecondsSinceEpoch(
                       dayBills.first.dateMs,
                     );
-                    final dayExp = buildReport(
-                      bills: dayBills,
-                      categories: categories,
-                      filter: ReportFilter(
-                        period: ReportPeriod.inclusiveDays(d, d),
-                        currency: currency,
-                      ),
-                    ).expense;
+                    final BigInt dayExp;
+                    if (view.isConverted) {
+                      dayExp = converted!.sumFor(
+                        convertedSelection
+                            .where(
+                              (b) =>
+                                  b.type == 0 &&
+                                  DateTime.fromMillisecondsSinceEpoch(
+                                    b.dateMs,
+                                  ).day ==
+                                      d.day,
+                            )
+                            .toList(),
+                      );
+                    } else {
+                      dayExp = buildReport(
+                        bills: dayBills,
+                        categories: categories,
+                        filter: ReportFilter(
+                          period: ReportPeriod.inclusiveDays(d, d),
+                          currency: view.code!,
+                        ),
+                      ).expense;
+                    }
                     return _DayGroup(
                       date: d,
                       dayExpense: dayExp,
-                      currency: currency,
+                      currency: view.isConverted ? 'CNY' : view.code!,
+                      converted: view.isConverted,
                       bills: dayBills,
                       accBy: accBy,
                       catBy: catBy,
@@ -129,11 +190,13 @@ class _MonthSummary extends StatelessWidget {
     required this.income,
     required this.expense,
     required this.currency,
+    required this.converted,
   });
 
   final BigInt income;
   final BigInt expense;
   final String currency;
+  final bool converted;
 
   Widget _stat(String label, BigInt cents, Color color, {bool signed = false}) {
     return Expanded(
@@ -148,8 +211,9 @@ class _MonthSummary extends StatelessWidget {
                 cents,
                 currency,
                 signed: signed,
-                prefix: currency != 'CNY',
+                prefix: converted || currency != 'CNY',
               ),
+              key: ValueKey('summary-$label'),
               style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
@@ -193,6 +257,7 @@ class _DayGroup extends StatelessWidget {
     required this.date,
     required this.dayExpense,
     required this.currency,
+    required this.converted,
     required this.bills,
     required this.accBy,
     required this.catBy,
@@ -201,6 +266,7 @@ class _DayGroup extends StatelessWidget {
   final DateTime date;
   final BigInt dayExpense;
   final String currency;
+  final bool converted;
   final List<Bill> bills;
   final Map<String, Account> accBy;
   final Map<String, Category> catBy;
@@ -228,7 +294,7 @@ class _DayGroup extends StatelessWidget {
                   fit: BoxFit.scaleDown,
                   alignment: Alignment.centerRight,
                   child: Text(
-                    '支出 ${displayCurrencyAmount(dayExpense, currency, prefix: currency != 'CNY')}',
+                    '支出 ${displayCurrencyAmount(dayExpense, currency, prefix: converted || currency != 'CNY')}',
                     style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ),

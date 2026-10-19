@@ -138,8 +138,9 @@ void main() {
     await _addBill(db, 'expense', 'cat_food', 1000);
     await pumpPage(tester, const HomeShell(), db: db);
 
-    expect(find.text('+60.00'), findsOneWidget);
-    expect(find.text('+50.00'), findsOneWidget);
+    // 默认总览（折合 CNY）：纯 CNY 数据金额不变，摘要带 ¥ 前缀。
+    expect(find.text('+¥ 60.00'), findsOneWidget);
+    expect(find.text('+¥ 50.00'), findsOneWidget);
     // 内部挂账仍有账单行，但不进入摘要及收入柱。
     expect(find.text('+999.00'), findsOneWidget);
     await tester.tap(find.text('图表'));

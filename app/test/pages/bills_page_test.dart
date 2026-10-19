@@ -55,6 +55,7 @@ void main() {
           accountsProvider.overrideWith(
             (ref) => Stream.value(const <Account>[]),
           ),
+          exchangeRateServiceProvider.overrideWithValue(defaultRateService()),
           categoriesProvider.overrideWith(
             (ref) => Stream.value(const <Category>[]),
           ),
@@ -137,11 +138,13 @@ void main() {
 
     await pumpPage(tester, const BillsPage(), db: db);
 
-    // 月摘要：收入 500.00 / 支出 100.00 / 结余 +400.00
-    // （+500.00 同时出现在摘要与收入行两处）
-    expect(find.text('+500.00'), findsNWidgets(2));
-    expect(find.text('-88.00'), findsOneWidget); // 支出行金额
-    expect(find.text('+400.00'), findsOneWidget);
+    // 默认总览（折合 CNY）：纯 CNY 数据下金额不变，摘要带 ¥ 前缀；
+    // 收入 500.00 / 支出 100.00 / 结余 +400.00（日小计为同一折算值的分区）。
+    expect(find.text('+¥ 500.00'), findsOneWidget);
+    expect(find.text('+500.00'), findsOneWidget); // 收入行金额
+    expect(find.text('¥ 100.00'), findsOneWidget); // 摘要支出（正向显示）
+    expect(find.text('支出 ¥ 88.00'), findsOneWidget); // 日小计
+    expect(find.text('+¥ 400.00'), findsOneWidget);
 
     // 支出行：无备注时标题为分类名；有备注为备注
     expect(find.text('餐饮'), findsOneWidget);
@@ -169,7 +172,7 @@ void main() {
 
     // 摘要收入列为 0.00（内部挂账被排除），账单行本身仍显示 +49.50
     expect(find.text('+49.50'), findsOneWidget);
-    expect(find.text('0.00'), findsWidgets);
+    expect(find.text('¥ 0.00'), findsNWidgets(3));
 
     await disposePage(tester, db);
   });
@@ -321,7 +324,8 @@ void main() {
     await _saveEditedBill(tester);
 
     expect(find.byType(BillDetailPage), findsOneWidget);
-    expect(find.text('-¥ 20.00'), findsOneWidget);
+    // 总览摘要（¥ 20.00）也会显示同额，金额断言限定详情页。
+    expect(find.descendant(of: find.byType(BillDetailPage), matching: find.text('-¥ 20.00')), findsOneWidget);
     expect(
       find.descendant(
         of: find.byType(BillDetailPage),
@@ -340,7 +344,7 @@ void main() {
     tester.testTextInput.hide();
     await _saveEditedBill(tester);
 
-    expect(find.text('-¥ 20.00'), findsOneWidget);
+    expect(find.descendant(of: find.byType(BillDetailPage), matching: find.text('-¥ 20.00')), findsOneWidget);
     expect(
       find.descendant(
         of: find.byType(BillDetailPage),

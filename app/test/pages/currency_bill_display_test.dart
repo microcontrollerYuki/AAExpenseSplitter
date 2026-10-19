@@ -143,11 +143,15 @@ void main() {
     );
     final before = await db.getAllBills();
     await pumpPage(tester, const BillsPage(), db: db);
+    await settleProviders(tester);
 
-    _expectSummary('收入', '+30.00');
-    _expectSummary('支出', '10.00');
-    _expectSummary('结余', '+20.00');
-    expect(find.text('支出 10.00'), findsOneWidget);
+    // 默认总览：三币按固定测试汇率折合 CNY（USD×7、JPY×0.05），单次舍入。
+    // 收入 = 30 + 50×7 + 2000×0.05/100 = ¥480.00；
+    // 支出 = 10 + 20×7 + 76.55 = ¥226.55；结余 +¥253.45。
+    _expectSummary('收入', '+¥ 480.00');
+    _expectSummary('支出', '¥ 226.55');
+    _expectSummary('结余', '+¥ 253.45');
+    expect(find.text('支出 ¥ 226.55'), findsOneWidget);
     expect(find.text('-10.00'), findsOneWidget);
     expect(find.text('-USD 20.00'), findsOneWidget);
     expect(find.text('-JPY 1,531'), findsOneWidget);
@@ -173,7 +177,12 @@ void main() {
     final container = ProviderScope.containerOf(
       tester.element(find.byType(BillsPage)),
     );
-    expect(container.read(selectedCurrencyProvider), 'JPY');
+    expect(
+      container.read(billsViewProvider),
+      const ReportViewCurrency.original('JPY'),
+    );
+    // 明细视图独立：图表视图默认仍是折合 CNY 总览。
+    expect(container.read(statsViewProvider), const ReportViewCurrency.converted());
 
     await _selectCurrency(tester, '人民币 CNY');
     _expectSummary('结余', '+20.00');
@@ -377,6 +386,9 @@ void main() {
             accountsProvider.overrideWith(
               (ref) => Stream.value([mkAccount('acc_cash')]),
             ),
+            exchangeRateServiceProvider.overrideWithValue(
+              defaultRateService(),
+            ),
             categoriesProvider.overrideWith(
               (ref) => failed
                   ? Stream<List<Category>>.error('分类读取失败')
@@ -422,6 +434,9 @@ void main() {
             ),
             accountsProvider.overrideWith(
               (ref) => Stream.value([mkAccount('acc_cash')]),
+            ),
+            exchangeRateServiceProvider.overrideWithValue(
+              defaultRateService(),
             ),
             categoriesProvider.overrideWith(
               (ref) => Stream.value(const <Category>[]),
@@ -474,27 +489,30 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         retry: (retryCount, error) => null,
-        overrides: [
-          monthBillsProvider.overrideWith((ref) {
-            final selected = ref.watch(selectedMonthProvider);
-            return selected == oldMonth
-                ? Stream.value([oldBill])
-                : controller.stream;
-          }),
-          accountsProvider.overrideWith(
-            (ref) => Stream.value([mkAccount('acc_cash')]),
-          ),
-          categoriesProvider.overrideWith(
-            (ref) => Stream.value(const <Category>[]),
-          ),
-        ],
+          overrides: [
+            monthBillsProvider.overrideWith((ref) {
+              final selected = ref.watch(selectedMonthProvider);
+              return selected == oldMonth
+                  ? Stream.value([oldBill])
+                  : controller.stream;
+            }),
+            accountsProvider.overrideWith(
+              (ref) => Stream.value([mkAccount('acc_cash')]),
+            ),
+            exchangeRateServiceProvider.overrideWithValue(
+              defaultRateService(),
+            ),
+            categoriesProvider.overrideWith(
+              (ref) => Stream.value(const <Category>[]),
+            ),
+          ],
         child: localizedApp(const BillsPage()),
       ),
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
-    _expectSummary('支出', '10.00');
-    _expectSummary('结余', '-10.00');
+    _expectSummary('支出', '¥ 10.00');
+    _expectSummary('结余', '-¥ 10.00');
 
     final container = ProviderScope.containerOf(
       tester.element(find.byType(BillsPage)),
@@ -521,9 +539,9 @@ void main() {
 
     controller.add([nextBill]);
     await settleProviders(tester);
-    _expectSummary('收入', '0.00');
-    _expectSummary('支出', '20.00');
-    _expectSummary('结余', '-20.00');
+    _expectSummary('收入', '¥ 0.00');
+    _expectSummary('支出', '¥ 20.00');
+    _expectSummary('结余', '-¥ 20.00');
     expect(find.text(nextTitle), findsOneWidget);
     expect(find.text('新月消费'), findsOneWidget);
     expect(find.text('旧月消费'), findsNothing);
@@ -541,7 +559,12 @@ void main() {
     final before = (await db.getAllBills()).single;
     await pumpPage(tester, const BillsPage(), db: db);
     expect(find.text('XTS -12345 最小单位'), findsOneWidget);
-    _expectSummary('支出', '0.00');
+    // 未知币种无法折算：总览不纳入，摘要为 0 且口径行明确列出。
+    _expectSummary('支出', '¥ 0.00');
+    final hint = tester
+        .widget<Text>(find.byKey(const ValueKey('report-view-hint')))
+        .data!;
+    expect(hint, contains('未纳入 XTS 1 笔'));
     expect(find.text('-123.45'), findsNothing);
     await _selectCurrency(tester, 'XTS（最小单位）');
     _expectSummary('支出', 'XTS 12345 最小单位');
@@ -566,7 +589,8 @@ void main() {
     await _bill(db, '再加一分', amount: 1);
     await pumpPage(tester, const BillsPage(), db: db);
 
-    const total = '92,233,720,368,547,758.08';
+    // 总览：CNY 恒等折算，int64+1 的合计以 BigInt 精确显示并带 ¥ 前缀。
+    const total = '¥ 92,233,720,368,547,758.08';
     _expectSummary('支出', total);
     _expectSummary('结余', '-$total');
     expect(find.text('支出 $total'), findsOneWidget);

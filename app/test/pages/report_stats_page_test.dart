@@ -16,12 +16,12 @@ class _ReportMonth extends SelectedMonthNotifier {
   DateTime build() => month;
 }
 
-class _ReportCurrency extends SelectedCurrencyNotifier {
-  _ReportCurrency(this.currency);
-  final String currency;
+class _ReportView extends StatsViewNotifier {
+  _ReportView(this.view);
+  final ReportViewCurrency view;
 
   @override
-  String build() => currency;
+  ReportViewCurrency build() => view;
 }
 
 Category _category(String id, {String? parent, int sort = 0}) => Category(
@@ -65,7 +65,9 @@ Future<AppDatabase> _pumpInjected(
   const StatsPage(),
   overrides: [
     selectedMonthProvider.overrideWith(() => _ReportMonth(month)),
-    selectedCurrencyProvider.overrideWith(() => _ReportCurrency(currency)),
+    statsViewProvider.overrideWith(
+      () => _ReportView(ReportViewCurrency.original(currency)),
+    ),
     categoriesProvider.overrideWith(
       (ref) => Stream.value(categories ?? [_category('food')]),
     ),

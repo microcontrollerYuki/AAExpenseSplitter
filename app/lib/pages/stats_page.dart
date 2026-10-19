@@ -11,17 +11,23 @@ import '../utils/bill_money.dart';
 import '../utils/category_stats.dart';
 import '../utils/currency.dart';
 import '../utils/report.dart';
+import '../utils/report_conversion.dart';
 import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
+import '../widgets/report_view_hint.dart';
 
-/// 图表页：本月分类支出饼图 + 近 6 个月收支趋势
+/// 图表页：本月分类支出饼图 + 近 6 个月收支趋势。
+/// 默认折合 CNY（R-09 折算模型，饼图与趋势共用同一冻结快照）；可切到
+/// 任一原币视图，视图状态与明细页相互独立。
 class StatsPage extends ConsumerWidget {
   const StatsPage({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final m = ref.watch(selectedMonthProvider);
-    final currency = ref.watch(selectedCurrencyProvider);
+    final view = ref.watch(statsViewProvider);
+    final rateService = ref.watch(exchangeRateReadyProvider);
+    ref.watch(exchangeRateVersionProvider);
     final monthBillsAsync = ref.watch(monthBillsProvider);
     final allBillsAsync = ref.watch(allBillsProvider);
     final allBills = allBillsAsync.value ?? const <Bill>[];
@@ -33,7 +39,11 @@ class StatsPage extends ConsumerWidget {
         appBar: AppBar(title: const MonthBar(), centerTitle: true),
         body: Column(
           children: [
-            CurrencyFilter(bills: allBills),
+            CurrencyFilter(
+              bills: allBills,
+              view: view,
+              onSelect: ref.read(statsViewProvider.notifier).select,
+            ),
             Expanded(
               child: Center(
                 child: categoriesAsync.hasError
@@ -56,7 +66,11 @@ class StatsPage extends ConsumerWidget {
         appBar: AppBar(title: const MonthBar(), centerTitle: true),
         body: Column(
           children: [
-            CurrencyFilter(bills: allBills),
+            CurrencyFilter(
+              bills: allBills,
+              view: view,
+              onSelect: ref.read(statsViewProvider.notifier).select,
+            ),
             Expanded(
               child: Center(child: Text(failed ? '账单读取失败，请稍后重试' : '账单加载中…')),
             ),
@@ -65,51 +79,138 @@ class StatsPage extends ConsumerWidget {
       );
     }
     final categories = categoriesAsync.value ?? const <Category>[];
-    final report = buildReport(
-      // Both the category chart and trend use one database snapshot, so a
-      // delayed monthly stream cannot briefly disagree with the trend.
-      bills: allBills,
-      categories: categories,
-      filter: ReportFilter(period: ReportPeriod.month(m), currency: currency),
-    );
+    final displayCode = view.isConverted ? 'CNY' : view.code!;
+    final period = ReportPeriod.month(m);
 
-    // 近 6 个月趋势（以选中月份为终点）
-    final trend = <_MonthSum>[];
-    for (var i = 5; i >= 0; i--) {
-      final mm = DateTime(m.year, m.month - i, 1);
-      final summary = buildReport(
+    final List<_MonthSum> trend;
+    CategoryStats? convertedExpenseStats;
+    List<CnyExcludedCurrency> excluded = const [];
+    FrozenCnyQuotes? frozen;
+    if (view.isConverted) {
+      // 一次同步冻结：本月饼图与 6 个月趋势共用同一汇率快照。
+      frozen = FrozenCnyQuotes.capture(rateService.quote);
+      final monthSelection = filterReportBills(
         bills: allBills,
         categories: categories,
-        filter: ReportFilter(
-          period: ReportPeriod.month(mm),
-          currency: currency,
-        ),
+        filter: ReportFilter.allCurrencies(period: period),
       );
-      trend.add(
-        _MonthSum(
-          month: mm.month,
-          expense: summary.expense,
-          income: summary.income,
-        ),
+      final monthConverted = CnyConvertedBills.convert(
+        bills: monthSelection,
+        quotes: frozen,
       );
+      excluded = monthConverted.excludedView;
+      final convertedBills = monthSelection
+          .where((b) => monthConverted.values.containsKey(b.id))
+          .toList();
+      convertedExpenseStats = aggregateCategoryStats(
+        bills: convertedBills,
+        categories: categories,
+        type: 0,
+        currency: null,
+        amountOf: (bill) => monthConverted.values[bill.id]!,
+      );
+      trend = <_MonthSum>[
+        for (var i = 5; i >= 0; i--)
+          _monthSumConverted(
+            DateTime(m.year, m.month - i, 1),
+            allBills,
+            categories,
+            frozen,
+          ),
+      ];
+    } else {
+      final report = buildReport(
+        // Both the category chart and trend use one database snapshot, so a
+        // delayed monthly stream cannot briefly disagree with the trend.
+        bills: allBills,
+        categories: categories,
+        filter: ReportFilter(period: period, currency: view.code!),
+      );
+      convertedExpenseStats = report.expenseStats;
+      trend = <_MonthSum>[
+        for (var i = 5; i >= 0; i--)
+          _monthSumOriginal(
+            DateTime(m.year, m.month - i, 1),
+            allBills,
+            categories,
+            view.code!,
+          ),
+      ];
     }
 
     return Scaffold(
       appBar: AppBar(title: const MonthBar(), centerTitle: true),
       body: ListView(
-        key: ValueKey('stats-${m.year}-${m.month}-$currency'),
+        key: ValueKey('stats-${m.year}-${m.month}-${view.code ?? 'converted'}'),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),
         children: [
-          CurrencyFilter(bills: allBills),
+          CurrencyFilter(
+            bills: allBills,
+            view: view,
+            onSelect: ref.read(statsViewProvider.notifier).select,
+          ),
+          if (view.isConverted)
+            ReportViewHint(quotes: frozen!, excluded: excluded),
           _CategoryPieCard(
-            key: ValueKey('${m.year}-${m.month}-$currency'),
-            stats: report.expenseStats,
-            currency: currency,
+            key: ValueKey(
+              '${m.year}-${m.month}-${view.code ?? 'converted'}',
+            ),
+            stats: convertedExpenseStats,
+            currency: displayCode,
           ),
           const SizedBox(height: 12),
-          _TrendCard(trend: trend, currency: currency),
+          _TrendCard(trend: trend, currency: displayCode),
         ],
       ),
+    );
+  }
+
+  _MonthSum _monthSumConverted(
+    DateTime month,
+    List<Bill> allBills,
+    List<Category> categories,
+    FrozenCnyQuotes frozen,
+  ) {
+    final selection = filterReportBills(
+      bills: allBills,
+      categories: categories,
+      filter: ReportFilter.allCurrencies(
+        period: ReportPeriod.month(month),
+      ),
+    );
+    final converted = CnyConvertedBills.convert(
+      bills: selection,
+      quotes: frozen,
+    );
+    return _MonthSum(
+      month: month.month,
+      expense: converted.sumFor(
+        selection.where((b) => b.type == 0).toList(),
+      ),
+      income: converted.sumFor(
+        selection.where((b) => b.type == 1).toList(),
+      ),
+    );
+  }
+
+  _MonthSum _monthSumOriginal(
+    DateTime month,
+    List<Bill> allBills,
+    List<Category> categories,
+    String currency,
+  ) {
+    final summary = buildReport(
+      bills: allBills,
+      categories: categories,
+      filter: ReportFilter(
+        period: ReportPeriod.month(month),
+        currency: currency,
+      ),
+    );
+    return _MonthSum(
+      month: month.month,
+      expense: summary.expense,
+      income: summary.income,
     );
   }
 }
