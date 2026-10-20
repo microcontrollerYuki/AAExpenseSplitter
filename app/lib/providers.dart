@@ -104,6 +104,38 @@ final statsViewProvider = NotifierProvider<StatsViewNotifier, ReportViewCurrency
   StatsViewNotifier.new,
 );
 
+/// 统计页粒度：月（默认，沿用 selectedMonthProvider）或年（selectedYearProvider）。
+enum StatsGranularity { month, year }
+
+class StatsGranularityNotifier extends Notifier<StatsGranularity> {
+  @override
+  StatsGranularity build() => StatsGranularity.month;
+
+  void select(StatsGranularity granularity) {
+    if (state != granularity) state = granularity;
+  }
+}
+
+final statsGranularityProvider =
+    NotifierProvider<StatsGranularityNotifier, StatsGranularity>(
+      StatsGranularityNotifier.new,
+    );
+
+/// 年报模式所选年份（默认当前年）；与 selectedMonthProvider 互不影响。
+class SelectedYearNotifier extends Notifier<int> {
+  @override
+  int build() => DateTime.now().year;
+
+  void selectYear(int year) {
+    if (state != year) state = year;
+  }
+
+  void shift(int delta) => selectYear(state + delta);
+}
+
+final selectedYearProvider =
+    NotifierProvider<SelectedYearNotifier, int>(SelectedYearNotifier.new);
+
 /// 首次访问即触发缓存读取（过期或缺失时自动联网一次；幂等）。
 final exchangeRateReadyProvider = Provider<ExchangeRateService>((ref) {
   final service = ref.watch(exchangeRateServiceProvider);

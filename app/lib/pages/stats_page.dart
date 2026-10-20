@@ -15,6 +15,7 @@ import '../utils/report_conversion.dart';
 import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
 import '../widgets/report_view_hint.dart';
+import '../widgets/year_bar.dart';
 
 /// 图表页：本月分类支出饼图 + 近 6 个月收支趋势。
 /// 默认折合 CNY（R-09 折算模型，饼图与趋势共用同一冻结快照）；可切到
@@ -25,7 +26,12 @@ class StatsPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final m = ref.watch(selectedMonthProvider);
+    final granularity = ref.watch(statsGranularityProvider);
+    final year = ref.watch(selectedYearProvider);
     final view = ref.watch(statsViewProvider);
+    final isYear = granularity == StatsGranularity.year;
+    Widget titleBar() =>
+        isYear ? const YearBar() : const MonthBar();
     final rateService = ref.watch(exchangeRateReadyProvider);
     ref.watch(exchangeRateVersionProvider);
     final monthBillsAsync = ref.watch(monthBillsProvider);
@@ -36,7 +42,7 @@ class StatsPage extends ConsumerWidget {
     // provisional income totals while that metadata is missing or failed.
     if (categoriesAsync.isLoading || categoriesAsync.hasError) {
       return Scaffold(
-        appBar: AppBar(title: const MonthBar(), centerTitle: true),
+        appBar: AppBar(title: titleBar(), centerTitle: true),
         body: Column(
           children: [
             CurrencyFilter(
@@ -63,7 +69,7 @@ class StatsPage extends ConsumerWidget {
         allBillsAsync.hasError) {
       final failed = monthBillsAsync.hasError || allBillsAsync.hasError;
       return Scaffold(
-        appBar: AppBar(title: const MonthBar(), centerTitle: true),
+        appBar: AppBar(title: titleBar(), centerTitle: true),
         body: Column(
           children: [
             CurrencyFilter(
@@ -80,12 +86,16 @@ class StatsPage extends ConsumerWidget {
     }
     final categories = categoriesAsync.value ?? const <Category>[];
     final displayCode = view.isConverted ? 'CNY' : view.code!;
-    final period = ReportPeriod.month(m);
+    final period = isYear
+        ? ReportPeriod.year(year)
+        : ReportPeriod.month(m);
 
     final List<_MonthSum> trend;
     CategoryStats? convertedExpenseStats;
     List<CnyExcludedCurrency> excluded = const [];
     FrozenCnyQuotes? frozen;
+    BigInt income = BigInt.zero;
+    BigInt expense = BigInt.zero;
     if (view.isConverted) {
       // 一次同步冻结：本月饼图与 6 个月趋势共用同一汇率快照。
       frozen = FrozenCnyQuotes.capture(rateService.quote);
@@ -109,13 +119,50 @@ class StatsPage extends ConsumerWidget {
         currency: null,
         amountOf: (bill) => monthConverted.values[bill.id]!,
       );
+      income = monthConverted.sumFor(
+        convertedBills.where((b) => b.type == 1).toList(),
+      );
+      expense = monthConverted.sumFor(
+        convertedBills.where((b) => b.type == 0).toList(),
+      );
+      if (isYear) {
+        // 年粒度趋势：12 个月按账单月份分区复用同一逐笔折算值，
+        // 分区之和与全年总额守恒。
+        trend = <_MonthSum>[
+          for (var month = 1; month <= 12; month++)
+            _monthSumFromConverted(
+              month,
+              convertedBills,
+              monthConverted,
+            ),
+        ];
+      } else {
+        trend = <_MonthSum>[
+          for (var i = 5; i >= 0; i--)
+            _monthSumConverted(
+              DateTime(m.year, m.month - i, 1),
+              allBills,
+              categories,
+              frozen,
+            ),
+        ];
+      }
+    } else if (isYear) {
+      final yearReport = buildReport(
+        bills: allBills,
+        categories: categories,
+        filter: ReportFilter(period: period, currency: view.code!),
+      );
+      income = yearReport.income;
+      expense = yearReport.expense;
+      convertedExpenseStats = yearReport.expenseStats;
       trend = <_MonthSum>[
-        for (var i = 5; i >= 0; i--)
-          _monthSumConverted(
-            DateTime(m.year, m.month - i, 1),
+        for (var month = 1; month <= 12; month++)
+          _monthSumOriginal(
+            DateTime(year, month, 1),
             allBills,
             categories,
-            frozen,
+            view.code!,
           ),
       ];
     } else {
@@ -139,11 +186,34 @@ class StatsPage extends ConsumerWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const MonthBar(), centerTitle: true),
+      appBar: AppBar(title: titleBar(), centerTitle: true),
       body: ListView(
-        key: ValueKey('stats-${m.year}-${m.month}-${view.code ?? 'converted'}'),
+        key: ValueKey(
+          'stats-${isYear ? 'y$year' : '${m.year}-${m.month}'}-'
+          '${view.code ?? 'converted'}',
+        ),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),
         children: [
+          SegmentedButton<StatsGranularity>(
+            key: const ValueKey('stats-granularity'),
+            segments: const [
+              ButtonSegment(
+                value: StatsGranularity.month,
+                label: Text('月'),
+                icon: Icon(Icons.calendar_month),
+              ),
+              ButtonSegment(
+                value: StatsGranularity.year,
+                label: Text('年'),
+                icon: Icon(Icons.event),
+              ),
+            ],
+            selected: {granularity},
+            onSelectionChanged: (selection) => ref
+                .read(statsGranularityProvider.notifier)
+                .select(selection.first),
+          ),
+          const SizedBox(height: 4),
           CurrencyFilter(
             bills: allBills,
             view: view,
@@ -151,15 +221,31 @@ class StatsPage extends ConsumerWidget {
           ),
           if (view.isConverted)
             ReportViewHint(quotes: frozen!, excluded: excluded),
+          if (isYear)
+            _YearSummaryRow(
+              key: const ValueKey('year-summary'),
+              income: income,
+              expense: expense,
+              currency: displayCode,
+              converted: view.isConverted,
+            ),
           _CategoryPieCard(
             key: ValueKey(
-              '${m.year}-${m.month}-${view.code ?? 'converted'}',
+              '${isYear ? 'y$year' : '${m.year}-${m.month}'}-'
+              '${view.code ?? 'converted'}',
             ),
             stats: convertedExpenseStats,
             currency: displayCode,
+            title: isYear ? '本年支出' : '本月支出',
+            emptyTitle: isYear ? '本年暂无支出' : '本月暂无支出',
+            periodLabel: isYear ? '本年' : '本月',
           ),
           const SizedBox(height: 12),
-          _TrendCard(trend: trend, currency: displayCode),
+          _TrendCard(
+            trend: trend,
+            currency: displayCode,
+            title: isYear ? '$year年逐月收支趋势' : '近6个月收支趋势',
+          ),
         ],
       ),
     );
@@ -182,14 +268,30 @@ class StatsPage extends ConsumerWidget {
       bills: selection,
       quotes: frozen,
     );
+    // 选集已限定在该月内，全部折算值即该月分区。
     return _MonthSum(
       month: month.month,
-      expense: converted.sumFor(
-        selection.where((b) => b.type == 0).toList(),
-      ),
-      income: converted.sumFor(
-        selection.where((b) => b.type == 1).toList(),
-      ),
+      expense: converted.sumFor(selection.where((b) => b.type == 0).toList()),
+      income: converted.sumFor(selection.where((b) => b.type == 1).toList()),
+    );
+  }
+
+  /// 年粒度趋势分区：12 个月复用同一逐笔折算值（全年选集折算一次）。
+  _MonthSum _monthSumFromConverted(
+    int month,
+    List<Bill> convertedBills,
+    CnyConvertedBills converted,
+  ) {
+    final inMonth = convertedBills
+        .where(
+          (bill) =>
+              DateTime.fromMillisecondsSinceEpoch(bill.dateMs).month == month,
+        )
+        .toList();
+    return _MonthSum(
+      month: month,
+      expense: converted.sumFor(inMonth.where((b) => b.type == 0).toList()),
+      income: converted.sumFor(inMonth.where((b) => b.type == 1).toList()),
     );
   }
 
@@ -226,6 +328,75 @@ class _MonthSum {
   });
 }
 
+/// 年粒度收支结余摘要：总览带 ¥ 前缀，原币 CNY 沿用无前缀规则。
+class _YearSummaryRow extends StatelessWidget {
+  const _YearSummaryRow({
+    super.key,
+    required this.income,
+    required this.expense,
+    required this.currency,
+    required this.converted,
+  });
+
+  final BigInt income;
+  final BigInt expense;
+  final String currency;
+  final bool converted;
+
+  Widget _stat(String label, BigInt value, Color color, {bool signed = false}) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          const SizedBox(height: 4),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              displayCurrencyAmount(
+                value,
+                currency,
+                signed: signed,
+                prefix: converted || currency != 'CNY',
+              ),
+              key: ValueKey('year-summary-$label'),
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final balance = income - expense;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(0, 8, 0, 12),
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          _stat('收入', income, kIncomeColor, signed: true),
+          _stat('支出', expense, kExpenseColor),
+          _stat(
+            '结余',
+            balance,
+            balance >= BigInt.zero ? kIncomeColor : kExpenseColor,
+            signed: true,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // Only chart geometry uses double; labels and percentages retain exact integers.
 double _chartValue(BigInt units, String code) {
   final digits = Currency.tryFromCode(code)?.minorUnitDigits ?? 0;
@@ -241,10 +412,16 @@ class _CategoryPieCard extends StatefulWidget {
     super.key,
     required this.stats,
     required this.currency,
+    required this.title,
+    required this.emptyTitle,
+    required this.periodLabel,
   });
 
   final CategoryStats stats;
   final String currency;
+  final String title;
+  final String emptyTitle;
+  final String periodLabel;
 
   @override
   State<_CategoryPieCard> createState() => _CategoryPieCardState();
@@ -278,9 +455,9 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
               spacing: 12,
               runSpacing: 6,
               children: [
-                const Text(
-                  '本月支出',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                Text(
+                  widget.title,
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
                 ),
                 Text(
                   displayCurrencyAmount(stats.total, currency),
@@ -295,10 +472,10 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
             ),
             const SizedBox(height: 12),
             if (stats.total == BigInt.zero)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 28),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 28),
                 child: Center(
-                  child: Text('本月暂无支出', style: TextStyle(color: Colors.grey)),
+                  child: Text(widget.emptyTitle, style: const TextStyle(color: Colors.grey)),
                 ),
               )
             else
@@ -363,6 +540,7 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
                       total: stats.total,
                       currency: currency,
                       color: kPiePalette[i % kPiePalette.length],
+                      periodLabel: widget.periodLabel,
                     ),
                 ],
               ),
@@ -380,12 +558,14 @@ class _CategoryGroupRow extends StatelessWidget {
     required this.total,
     required this.currency,
     required this.color,
+    required this.periodLabel,
   });
 
   final CategoryStatGroup group;
   final BigInt total;
   final String currency;
   final Color color;
+  final String periodLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -394,7 +574,7 @@ class _CategoryGroupRow extends StatelessWidget {
     final title = Text(label, maxLines: 2, overflow: TextOverflow.ellipsis);
     final subtitle = Text(
       '${displayCurrencyAmount(group.amount, currency, prefix: false)} · '
-      '占本月 ${_percent(group.amount, total)}%',
+      '占$periodLabel ${_percent(group.amount, total)}%',
       style: const TextStyle(fontSize: 12, color: Colors.grey),
     );
     final dot = Container(
@@ -504,10 +684,15 @@ class _LegendRow extends StatelessWidget {
 }
 
 class _TrendCard extends StatelessWidget {
-  const _TrendCard({required this.trend, required this.currency});
+  const _TrendCard({
+    required this.trend,
+    required this.currency,
+    required this.title,
+  });
 
   final List<_MonthSum> trend;
   final String currency;
+  final String title;
 
   @override
   Widget build(BuildContext context) {
@@ -530,9 +715,9 @@ class _TrendCard extends StatelessWidget {
               runSpacing: 6,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                const Text(
-                  '近6个月收支趋势',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                Text(
+                  title,
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
                 ),
                 _dot(kExpenseColor, '支出'),
                 _dot(kIncomeColor, '收入'),

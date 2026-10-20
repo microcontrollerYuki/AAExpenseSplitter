@@ -145,6 +145,14 @@ void main() {
     expect(find.text('+999.00'), findsOneWidget);
     await tester.tap(find.text('图表'));
     await settleProviders(tester);
+    // 粒度切换行加入后趋势卡移出懒加载构建范围，滚动至可见再断言。
+    await tester.scrollUntilVisible(
+      find.byType(BarChart),
+      200,
+      scrollable: find.byType(Scrollable).first,
+      maxScrolls: 12,
+    );
+    await settleProviders(tester);
     final trend = tester.widget<BarChart>(find.byType(BarChart));
     expect(trend.data.barGroups.last.barRods.first.toY, 10);
     expect(trend.data.barGroups.last.barRods.last.toY, 60);

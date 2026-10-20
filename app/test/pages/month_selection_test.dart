@@ -131,6 +131,14 @@ void main() {
     expect(find.text('${year - 1}年12月'), findsOneWidget);
     final decemberPie = tester.widget<PieChart>(find.byType(PieChart));
     expect(decemberPie.data.sections.single.value, 30);
+    // 粒度切换行加入后趋势卡移出懒加载构建范围，滚动至可见再断言。
+    await tester.scrollUntilVisible(
+      find.byType(BarChart),
+      200,
+      scrollable: find.byType(Scrollable).first,
+      maxScrolls: 12,
+    );
+    await settleProviders(tester);
     final decemberTrend = tester.widget<BarChart>(find.byType(BarChart));
     expect(decemberTrend.data.barGroups.last.barRods.first.toY, 30);
     expect(decemberTrend.data.barGroups.last.barRods.last.toY, 40);
@@ -140,6 +148,13 @@ void main() {
     expect(find.text('¥ 5.00'), findsOneWidget);
     final januaryPie = tester.widget<PieChart>(find.byType(PieChart));
     expect(januaryPie.data.sections.single.value, 5);
+    await tester.scrollUntilVisible(
+      find.byType(BarChart),
+      200,
+      scrollable: find.byType(Scrollable).first,
+      maxScrolls: 12,
+    );
+    await settleProviders(tester);
     final januaryTrend = tester.widget<BarChart>(find.byType(BarChart));
     expect(januaryTrend.data.barGroups.last.barRods.first.toY, 5);
     expect(januaryTrend.data.barGroups.last.barRods.last.toY, 70);
