@@ -13,23 +13,27 @@ import '../utils/report_conversion.dart';
 import '../utils/transfer_fee.dart';
 import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
+import '../widgets/range_bar.dart';
 import '../widgets/report_view_hint.dart';
 import 'accounts_page.dart';
 import 'bill_detail_page.dart';
 
-/// 明细页（首页）：月份切换 + 月结余摘要 + 按日分组的账单流
-/// 月摘要默认折合 CNY（R-09 折算模型），可切到任一原币视图；账单列表
+/// 明细页（首页）：月份切换 / 自定义日期范围 + 周期收支摘要 + 按日分组的账单流
+/// 摘要默认折合 CNY（R-09 折算模型），可切到任一原币视图；账单列表
 /// 始终全币种原币展示，切换只影响摘要与按日支出小计。
+/// 周期默认按月（selectedMonthProvider），可切自定义范围（首末日包含，
+/// 内部为起日零点到结束日次日零点左闭右开，R-03）。
 class BillsPage extends ConsumerWidget {
   const BillsPage({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final month = ref.watch(selectedMonthProvider);
+    final isRangeMode =
+        ref.watch(billsPeriodModeProvider) == BillsPeriodMode.range;
     final view = ref.watch(billsViewProvider);
     final rateService = ref.watch(exchangeRateReadyProvider);
     ref.watch(exchangeRateVersionProvider);
-    final billsAsync = ref.watch(monthBillsProvider);
+    final billsAsync = ref.watch(billsPageBillsProvider);
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final categoriesAsync = ref.watch(categoriesProvider);
     final categories = categoriesAsync.value ?? const <Category>[];
@@ -37,7 +41,7 @@ class BillsPage extends ConsumerWidget {
     final catBy = {for (final c in categories) c.id: c};
 
     final monthBills = billsAsync.value ?? const <Bill>[];
-    final period = ReportPeriod.month(month);
+    final period = ref.watch(billsPeriodProvider);
 
     BigInt income;
     BigInt expense;
@@ -78,9 +82,15 @@ class BillsPage extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const MonthBar(),
+        title: isRangeMode ? const RangeBar() : const MonthBar(),
         centerTitle: true,
         actions: [
+          IconButton(
+            key: const ValueKey('bills-range-open'),
+            icon: const Icon(Icons.date_range),
+            tooltip: '自定义范围',
+            onPressed: () => showBillsRangePicker(context, ref),
+          ),
           IconButton(
             icon: const Icon(Icons.account_balance_wallet_outlined),
             tooltip: '账本',
@@ -124,50 +134,40 @@ class BillsPage extends ConsumerWidget {
               loading: () => const Center(child: CircularProgressIndicator()),
               error: (e, st) => Center(child: Text('读取失败：$e')),
               data: (bills) {
-                if (bills.isEmpty) return const _EmptyView();
+                if (bills.isEmpty) return _EmptyView(inRange: isRangeMode);
+                // 按完整年月日分组并一次累加当日支出：折算分支经 values
+                // 复用逐笔折算值（缺率计 0，与 sumFor 一致），原币分支只累
+                // 当前视图币种；键含年月日，跨月范围不会合并不同月份同一天。
                 final grouped = <String, List<Bill>>{};
+                final dayExpense = <String, BigInt>{};
                 for (final b in bills) {
                   final d = DateTime.fromMillisecondsSinceEpoch(b.dateMs);
-                  grouped
-                      .putIfAbsent('${d.year}-${d.month}-${d.day}', () => [])
-                      .add(b);
+                  final key = '${d.year}-${d.month}-${d.day}';
+                  grouped.putIfAbsent(key, () => []).add(b);
+                  if (b.type != 0) continue;
+                  if (!view.isConverted && b.currency != view.code) continue;
+                  final amount = view.isConverted
+                      ? (converted!.values[b.id] ?? BigInt.zero)
+                      : BigInt.from(b.amount);
+                  dayExpense[key] = (dayExpense[key] ?? BigInt.zero) + amount;
                 }
+                final keys = grouped.keys.toList();
+                // 月模式沿用 bills-年-月 供既有滚动定位；范围模式加 r- 前缀
+                final listKey = isRangeMode
+                    ? 'bills-r-${period.startMs}-${period.endMs}'
+                    : 'bills-${period.start.year}-${period.start.month}';
                 return ListView.builder(
-                  key: ValueKey('bills-${month.year}-${month.month}'),
+                  key: ValueKey(listKey),
                   padding: const EdgeInsets.only(bottom: 88),
                   itemCount: grouped.length,
                   itemBuilder: (_, i) {
-                    final dayBills = grouped.values.elementAt(i);
+                    final dayBills = grouped[keys[i]]!;
                     final d = DateTime.fromMillisecondsSinceEpoch(
                       dayBills.first.dateMs,
                     );
-                    final BigInt dayExp;
-                    if (view.isConverted) {
-                      dayExp = converted!.sumFor(
-                        convertedSelection
-                            .where(
-                              (b) =>
-                                  b.type == 0 &&
-                                  DateTime.fromMillisecondsSinceEpoch(
-                                    b.dateMs,
-                                  ).day ==
-                                      d.day,
-                            )
-                            .toList(),
-                      );
-                    } else {
-                      dayExp = buildReport(
-                        bills: dayBills,
-                        categories: categories,
-                        filter: ReportFilter(
-                          period: ReportPeriod.inclusiveDays(d, d),
-                          currency: view.code!,
-                        ),
-                      ).expense;
-                    }
                     return _DayGroup(
                       date: d,
-                      dayExpense: dayExp,
+                      dayExpense: dayExpense[keys[i]] ?? BigInt.zero,
                       currency: view.isConverted ? 'CNY' : view.code!,
                       converted: view.isConverted,
                       bills: dayBills,
@@ -499,7 +499,7 @@ class _BillTileState extends ConsumerState<_BillTile> {
         ? ref.watch(transferFeeProvider(bill.id))
         : null;
     final accountState = ref.watch(accountsProvider);
-    final billsState = ref.watch(monthBillsProvider);
+    final billsState = ref.watch(billsPageBillsProvider);
     final feeManageable =
         feeState != null &&
         billsState.hasValue &&
@@ -556,22 +556,24 @@ class _BillTileState extends ConsumerState<_BillTile> {
 }
 
 class _EmptyView extends StatelessWidget {
-  const _EmptyView();
+  const _EmptyView({required this.inRange});
+
+  final bool inRange;
 
   @override
   Widget build(BuildContext context) {
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
-        children: const [
-          Text('🧾', style: TextStyle(fontSize: 44)),
-          SizedBox(height: 10),
+        children: [
+          const Text('🧾', style: TextStyle(fontSize: 44)),
+          const SizedBox(height: 10),
           Text(
-            '本月还没有账单',
-            style: TextStyle(fontSize: 15, color: Colors.black54),
+            inRange ? '该时间段内没有账单' : '本月还没有账单',
+            style: const TextStyle(fontSize: 15, color: Colors.black54),
           ),
-          SizedBox(height: 4),
-          Text(
+          const SizedBox(height: 4),
+          const Text(
             '点击下方 + 记一笔',
             style: TextStyle(fontSize: 12, color: Colors.grey),
           ),

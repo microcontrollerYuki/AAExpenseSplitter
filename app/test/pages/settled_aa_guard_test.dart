@@ -333,7 +333,7 @@ void main() {
     final bill = await _seedOrdinaryBill(db);
     await pumpPage(tester, const BillsPage(), db: db, overrides: [
       // 模拟当前帧尚未收到新记录，数据库和删除服务仍为真实实现。
-      monthBillsProvider.overrideWith((ref) => Stream.value([bill])),
+      billsPageBillsProvider.overrideWith((ref) => Stream.value([bill])),
     ]);
     await tester.drag(find.text(bill.note), const Offset(-100, 0));
     await tester.pump(const Duration(milliseconds: 300));

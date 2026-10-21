@@ -136,6 +136,57 @@ class SelectedYearNotifier extends Notifier<int> {
 final selectedYearProvider =
     NotifierProvider<SelectedYearNotifier, int>(SelectedYearNotifier.new);
 
+/// 明细页周期模式：按月（沿用 selectedMonthProvider）或自定义日期范围
+/// （selectedRangeProvider）。图表页不受影响，报表组合筛选属 R-06。
+enum BillsPeriodMode { month, range }
+
+class BillsPeriodModeNotifier extends Notifier<BillsPeriodMode> {
+  @override
+  BillsPeriodMode build() => BillsPeriodMode.month;
+
+  void select(BillsPeriodMode mode) {
+    if (state != mode) state = mode;
+  }
+}
+
+final billsPeriodModeProvider =
+    NotifierProvider<BillsPeriodModeNotifier, BillsPeriodMode>(
+      BillsPeriodModeNotifier.new,
+    );
+
+/// 明细页自定义日期范围（首末日包含；null 表示尚未选择过）。
+/// 退出范围模式后保留，再次打开选择器时作为初始选择。
+class SelectedRangeNotifier extends Notifier<ReportDateRange?> {
+  @override
+  ReportDateRange? build() => null;
+
+  void select(ReportDateRange range) {
+    if (state != range) state = range;
+  }
+}
+
+final selectedRangeProvider =
+    NotifierProvider<SelectedRangeNotifier, ReportDateRange?>(
+      SelectedRangeNotifier.new,
+    );
+
+/// 明细页当前报表周期：范围模式且已选范围用自定义区间，否则沿用所选月份。
+final billsPeriodProvider = Provider<ReportPeriod>((ref) {
+  if (ref.watch(billsPeriodModeProvider) == BillsPeriodMode.range) {
+    final range = ref.watch(selectedRangeProvider);
+    if (range != null) return range.period;
+  }
+  return ReportPeriod.month(ref.watch(selectedMonthProvider));
+});
+
+/// 明细页账单流：跟随 billsPeriodProvider；月模式与既有月流同口径。
+final billsPageBillsProvider = StreamProvider<List<Bill>>((ref) {
+  final period = ref.watch(billsPeriodProvider);
+  return ref
+      .watch(databaseProvider)
+      .watchBillsOfRange(period.startMs, period.endMs);
+});
+
 /// 首次访问即触发缓存读取（过期或缺失时自动联网一次；幂等）。
 final exchangeRateReadyProvider = Provider<ExchangeRateService>((ref) {
   final service = ref.watch(exchangeRateServiceProvider);

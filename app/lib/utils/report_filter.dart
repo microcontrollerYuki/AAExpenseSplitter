@@ -37,6 +37,50 @@ class ReportPeriod {
   bool contains(int dateMs) => dateMs >= startMs && dateMs < endMs;
 }
 
+/// 自定义日期范围：界面选择首末两个日历日（都包含）。[period] 转为起日
+/// 零点到结束日次日零点的左闭右开区间，由 [ReportPeriod.inclusiveDays]
+/// 用日历字段构造，不用固定毫秒数代替日历日。
+class ReportDateRange {
+  ReportDateRange({required DateTime start, required DateTime end})
+    : firstDay = DateTime(start.year, start.month, start.day),
+      lastDay = DateTime(end.year, end.month, end.day) {
+    if (lastDay.isBefore(firstDay)) {
+      throw ArgumentError('Range end must not be before start');
+    }
+  }
+
+  /// 起日零点。
+  final DateTime firstDay;
+
+  /// 结束日零点（结束日当天仍在区间内）。
+  final DateTime lastDay;
+
+  /// 首末日包含的左闭右开报表区间。
+  ReportPeriod get period => ReportPeriod.inclusiveDays(firstDay, lastDay);
+
+  /// 区间包含的日历天数（首末都算）；用 UTC 日历日差，不受时区偏移影响。
+  int get dayCount =>
+      DateTime.utc(lastDay.year, lastDay.month, lastDay.day)
+          .difference(DateTime.utc(firstDay.year, firstDay.month, firstDay.day))
+          .inDays +
+      1;
+
+  /// 整体平移 [days] 个日历日，跨度不变；日字段进位由 DateTime 处理。
+  ReportDateRange shiftDays(int days) => ReportDateRange(
+    start: DateTime(firstDay.year, firstDay.month, firstDay.day + days),
+    end: DateTime(lastDay.year, lastDay.month, lastDay.day + days),
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is ReportDateRange &&
+      other.firstDay == firstDay &&
+      other.lastDay == lastDay;
+
+  @override
+  int get hashCode => Object.hash(firstDay, lastDay);
+}
+
 enum ReportCategoryMode { all, root, direct, exact, uncategorized, exactIds }
 
 /// A missing requested category matches nothing. Unassigned/missing historical

@@ -51,7 +51,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          monthBillsProvider.overrideWith((ref) => const Stream.empty()),
+          billsPageBillsProvider.overrideWith((ref) => const Stream.empty()),
           accountsProvider.overrideWith(
             (ref) => Stream.value(const <Account>[]),
           ),
@@ -73,7 +73,7 @@ void main() {
       tester,
       const BillsPage(),
       overrides: [
-        monthBillsProvider.overrideWith((ref) => Stream.error('boom')),
+        billsPageBillsProvider.overrideWith((ref) => Stream.error('boom')),
       ],
     );
     expect(find.textContaining('读取失败：boom'), findsOneWidget);

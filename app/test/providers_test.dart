@@ -6,6 +6,7 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 
 import 'package:aa_expense_splitter/data/app_database.dart';
 import 'package:aa_expense_splitter/providers.dart';
+import 'package:aa_expense_splitter/utils/report_filter.dart';
 
 import 'helpers/test_support.dart';
 
@@ -155,6 +156,84 @@ void main() {
       final next =
           await nextMonthEmission.future.timeout(const Duration(seconds: 2));
       expect(next.map((b) => b.id), ['next-month-start']);
+    });
+
+    test('billsPeriodProvider 默认按月，范围模式回退与恢复（R-03）', () {
+      final now = DateTime.now();
+      int monthStart() =>
+          DateTime(now.year, now.month).millisecondsSinceEpoch;
+      // 默认按月
+      expect(container.read(billsPeriodProvider).startMs, monthStart());
+      // 范围模式但尚未选择范围：回退当月
+      container
+          .read(billsPeriodModeProvider.notifier)
+          .select(BillsPeriodMode.range);
+      expect(container.read(billsPeriodProvider).startMs, monthStart());
+      // 选定范围后按自定义区间（首末日包含 → 次日零点结束）
+      container.read(selectedRangeProvider.notifier).select(ReportDateRange(
+        start: DateTime(2026, 1, 30),
+        end: DateTime(2026, 3, 2),
+      ));
+      final period = container.read(billsPeriodProvider);
+      expect(period.startMs, DateTime(2026, 1, 30).millisecondsSinceEpoch);
+      expect(period.endMs, DateTime(2026, 3, 3).millisecondsSinceEpoch);
+      // 退出回按月：范围保留，周期恢复当月
+      container
+          .read(billsPeriodModeProvider.notifier)
+          .select(BillsPeriodMode.month);
+      expect(container.read(selectedRangeProvider), isNotNull);
+      expect(container.read(billsPeriodProvider).startMs, monthStart());
+    });
+
+    test('billsPageBillsProvider 范围模式按自定义区间过滤（R-03）', () async {
+      await db.upsertBill(
+          id: 'dec29',
+          type: 0,
+          amount: 1,
+          accountId: 'acc_cash',
+          dateMs: DateTime(2025, 12, 29, 23, 59).millisecondsSinceEpoch);
+      await db.upsertBill(
+          id: 'dec30',
+          type: 0,
+          amount: 1,
+          accountId: 'acc_cash',
+          dateMs: DateTime(2025, 12, 30).millisecondsSinceEpoch);
+      await db.upsertBill(
+          id: 'jan2',
+          type: 1,
+          amount: 1,
+          accountId: 'acc_cash',
+          dateMs: DateTime(2026, 1, 2, 23, 59).millisecondsSinceEpoch);
+      await db.upsertBill(
+          id: 'jan3',
+          type: 0,
+          amount: 1,
+          accountId: 'acc_cash',
+          dateMs: DateTime(2026, 1, 3).millisecondsSinceEpoch);
+      subs.add(container.listen(billsPageBillsProvider, (_, _) {}));
+
+      container
+          .read(billsPeriodModeProvider.notifier)
+          .select(BillsPeriodMode.range);
+      container.read(selectedRangeProvider.notifier).select(ReportDateRange(
+        start: DateTime(2025, 12, 30),
+        end: DateTime(2026, 1, 2),
+      ));
+
+      final rangeEmission = Completer<List<Bill>>();
+      final remove = container.listen<AsyncValue<List<Bill>>>(
+        billsPageBillsProvider,
+        (_, next) {
+          final bills = next.value;
+          if (!next.isLoading && bills != null && bills.length == 2) {
+            rangeEmission.complete(bills);
+          }
+        },
+      );
+      final bills =
+          await rangeEmission.future.timeout(const Duration(seconds: 2));
+      expect(bills.map((b) => b.id), ['jan2', 'dec30']);
+      remove.close();
     });
 
     test('aaGroupsProvider / settlementsProvider 暴露写入数据', () async {

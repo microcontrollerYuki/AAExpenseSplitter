@@ -382,7 +382,7 @@ void main() {
         ProviderScope(
           retry: (retryCount, error) => null,
           overrides: [
-            monthBillsProvider.overrideWith((ref) => Stream.value([internal])),
+            billsPageBillsProvider.overrideWith((ref) => Stream.value([internal])),
             accountsProvider.overrideWith(
               (ref) => Stream.value([mkAccount('acc_cash')]),
             ),
@@ -427,7 +427,7 @@ void main() {
         ProviderScope(
           retry: (retryCount, error) => null,
           overrides: [
-            monthBillsProvider.overrideWith(
+            billsPageBillsProvider.overrideWith(
               (ref) => failed
                   ? Stream<List<Bill>>.error('boom')
                   : const Stream<List<Bill>>.empty(),
@@ -490,7 +490,7 @@ void main() {
       ProviderScope(
         retry: (retryCount, error) => null,
           overrides: [
-            monthBillsProvider.overrideWith((ref) {
+            billsPageBillsProvider.overrideWith((ref) {
               final selected = ref.watch(selectedMonthProvider);
               return selected == oldMonth
                   ? Stream.value([oldBill])
