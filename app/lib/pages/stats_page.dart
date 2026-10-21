@@ -29,6 +29,8 @@ class StatsPage extends ConsumerWidget {
     final granularity = ref.watch(statsGranularityProvider);
     final year = ref.watch(selectedYearProvider);
     final view = ref.watch(statsViewProvider);
+    final statsType = ref.watch(statsTypeProvider);
+    final isIncome = statsType == 1;
     final isYear = granularity == StatsGranularity.year;
     Widget titleBar() =>
         isYear ? const YearBar() : const MonthBar();
@@ -91,7 +93,7 @@ class StatsPage extends ConsumerWidget {
         : ReportPeriod.month(m);
 
     final List<_MonthSum> trend;
-    CategoryStats? convertedExpenseStats;
+    CategoryStats? pieStats;
     List<CnyExcludedCurrency> excluded = const [];
     FrozenCnyQuotes? frozen;
     BigInt income = BigInt.zero;
@@ -112,10 +114,10 @@ class StatsPage extends ConsumerWidget {
       final convertedBills = monthSelection
           .where((b) => monthConverted.values.containsKey(b.id))
           .toList();
-      convertedExpenseStats = aggregateCategoryStats(
+      pieStats = aggregateCategoryStats(
         bills: convertedBills,
         categories: categories,
-        type: 0,
+        type: statsType,
         currency: null,
         amountOf: (bill) => monthConverted.values[bill.id]!,
       );
@@ -155,7 +157,7 @@ class StatsPage extends ConsumerWidget {
       );
       income = yearReport.income;
       expense = yearReport.expense;
-      convertedExpenseStats = yearReport.expenseStats;
+      pieStats = isIncome ? yearReport.incomeStats : yearReport.expenseStats;
       trend = <_MonthSum>[
         for (var month = 1; month <= 12; month++)
           _monthSumOriginal(
@@ -173,7 +175,7 @@ class StatsPage extends ConsumerWidget {
         categories: categories,
         filter: ReportFilter(period: period, currency: view.code!),
       );
-      convertedExpenseStats = report.expenseStats;
+      pieStats = isIncome ? report.incomeStats : report.expenseStats;
       trend = <_MonthSum>[
         for (var i = 5; i >= 0; i--)
           _monthSumOriginal(
@@ -219,6 +221,25 @@ class StatsPage extends ConsumerWidget {
             view: view,
             onSelect: ref.read(statsViewProvider.notifier).select,
           ),
+          SegmentedButton<int>(
+            key: const ValueKey('stats-type'),
+            segments: const [
+              ButtonSegment(
+                value: 0,
+                label: Text('支出'),
+                icon: Icon(Icons.south_east),
+              ),
+              ButtonSegment(
+                value: 1,
+                label: Text('收入'),
+                icon: Icon(Icons.north_west),
+              ),
+            ],
+            selected: {statsType},
+            onSelectionChanged: (selection) => ref
+                .read(statsTypeProvider.notifier)
+                .select(selection.first),
+          ),
           if (view.isConverted)
             ReportViewHint(quotes: frozen!, excluded: excluded),
           if (isYear)
@@ -234,11 +255,13 @@ class StatsPage extends ConsumerWidget {
               '${isYear ? 'y$year' : '${m.year}-${m.month}'}-'
               '${view.code ?? 'converted'}',
             ),
-            stats: convertedExpenseStats,
+            stats: pieStats,
             currency: displayCode,
-            title: isYear ? '本年支出' : '本月支出',
-            emptyTitle: isYear ? '本年暂无支出' : '本月暂无支出',
+            title: '${isYear ? '本年' : '本月'}${isIncome ? '收入' : '支出'}',
+            emptyTitle:
+                '${isYear ? '本年' : '本月'}暂无${isIncome ? '收入' : '支出'}',
             periodLabel: isYear ? '本年' : '本月',
+            isIncome: isIncome,
           ),
           const SizedBox(height: 12),
           _TrendCard(
@@ -415,6 +438,7 @@ class _CategoryPieCard extends StatefulWidget {
     required this.title,
     required this.emptyTitle,
     required this.periodLabel,
+    required this.isIncome,
   });
 
   final CategoryStats stats;
@@ -422,6 +446,7 @@ class _CategoryPieCard extends StatefulWidget {
   final String title;
   final String emptyTitle;
   final String periodLabel;
+  final bool isIncome;
 
   @override
   State<_CategoryPieCard> createState() => _CategoryPieCardState();
@@ -461,11 +486,13 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
                 ),
                 Text(
                   displayCurrencyAmount(stats.total, currency),
-                  key: const ValueKey('stats-expense-total'),
-                  style: const TextStyle(
+                  key: ValueKey(
+                    widget.isIncome ? 'stats-income-total' : 'stats-expense-total',
+                  ),
+                  style: TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.bold,
-                    color: kExpenseColor,
+                    color: widget.isIncome ? kIncomeColor : kExpenseColor,
                   ),
                 ),
               ],

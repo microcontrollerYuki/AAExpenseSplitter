@@ -121,6 +121,23 @@ final statsGranularityProvider =
       StatsGranularityNotifier.new,
     );
 
+/// 图表页收支维度：0 支出（默认，延续既有饼图）或 1 收入。
+/// 切换只影响饼图与分类排行；粒度、月份 / 年份与币种视图互不影响。
+class StatsTypeNotifier extends Notifier<int> {
+  @override
+  int build() => 0;
+
+  void select(int type) {
+    if (type != 0 && type != 1) {
+      throw ArgumentError.value(type, 'type', 'Only expense or income');
+    }
+    if (state != type) state = type;
+  }
+}
+
+final statsTypeProvider =
+    NotifierProvider<StatsTypeNotifier, int>(StatsTypeNotifier.new);
+
 /// 年报模式所选年份（默认当前年）；与 selectedMonthProvider 互不影响。
 class SelectedYearNotifier extends Notifier<int> {
   @override
