@@ -1,6 +1,6 @@
 # AI 开发交接说明
 
-交接日期：**2026-10-17**。面向接手本项目的 AI 开发代理。先核对实际仓库与最新文档，再动手；本文是交接快照，后续任务勾选以 [总 TODO](TODO-无障碍自动记账.md) 为准，验证结果以 [开发进度](开发进度.md) 和 [测试说明](测试说明.md) 为准。不要把历史档案里的“下一项”当成当前任务。
+交接日期：**2026-10-21**。面向接手本项目的 AI 开发代理。先核对实际仓库与最新文档，再动手；本文是交接快照，后续任务勾选以 [总 TODO](TODO-无障碍自动记账.md) 为准，验证结果以 [开发进度](开发进度.md) 和 [测试说明](测试说明.md) 为准。不要把历史档案里的“下一项”当成当前任务。
 
 ## 用户目标与工作要求
 
@@ -17,30 +17,30 @@
 | 项目 | 本次交接状态 |
 |---|---|
 | 仓库 / 分支 | `https://github.com/microcontrollerYuki/AAExpenseSplitter.git` / `Glm5.3F`（已合并 `codex/stabilize-aa` 与远端 main） |
-| 最近功能提交 | R-02（分支 `Glm5.3F`，提交号以 `git log` 为准），已推送并核对远端 |
+| 最近功能提交 | R-03（分支 `Glm5.3F`，提交号以 `git log` 为准），已推送并核对远端 |
 | 版本 / 数据库 | `app/pubspec.yaml` 为 `0.2.0+5000`；Drift / SQLite schema 6 |
-| 总任务 | 65 个唯一编号，32 完成 / 33 待办；R 报表阶段 4 / 10。数量不是产品完成率 |
-| 最近专项 / 全量 | R-02 专项（年报告 + 既有相关回归）通过；全量 1000/1000，runner 约 60 秒 |
+| 总任务 | 65 个唯一编号，33 完成 / 32 待办；R 报表阶段 5 / 10。数量不是产品完成率 |
+| 最近专项 / 全量 | R-03 专项 16/16（模型 8 + 页面 6 + providers 2）；全量 1016/1016，runner 约 60 秒 |
 | 分析 | 0 error、27 条原有 warning / info；本轮新增 lint 已处理，不能宣称存量清零 |
-| 设备验收 | 两台既有雷电已安装 R-02：年粒度总额与设备库核实一致（5554 ¥811/¥22.50；5556 ¥32.50），切年 / 原币切换通过；C-13 的设备级断网操作仍遗留（雷电 WLAN 与 adbd 联动断开，详见开发进度限制段） |
-| 当前下一项 | **R-03 自定义日期范围** |
+| 设备验收 | 两台既有雷电已安装 R-03：跨年范围（2025-12-30 ~ 2026-01-02）明细 / 摘要 / 日小计与设备库一致，取消保留与退出回按月通过；QA 数据精确清理后指纹与插入前一致；C-13 的设备级断网操作仍遗留（雷电 WLAN 与 adbd 联动断开，详见开发进度限制段） |
+| 当前下一项 | **R-04 收入饼图与分类排行** |
 
 本次交接文档同时同步 C-12 完成状态。最终文档提交号从 `git log` 读取，不在本文写入自身提交号。上述测试是上一轮已执行的基线，接手后的改动仍须重新验证。
 
-已交付：手动收支、本人转账、六币种账户及实际双额、转账内手续费、两级分类 / 宫格选择 / 迁移 / 删除转移、手选年月、底部账单详情、原币月统计 / 分类 / 六个月趋势、共享汇率设置、转账汇率预填与手动覆盖、总收支折算模型与全币种选择、明细 / 图表默认折合 CNY 总收支与独立原币切换、图片 OCR 辅助录入、仅 CNY 的双人 AA 与加密文件交换。完整功能 / 限制见 [项目概览](README.md)。
+已交付：手动收支、本人转账、六币种账户及实际双额、转账内手续费、两级分类 / 宫格选择 / 迁移 / 删除转移、手选年月、底部账单详情、原币月统计 / 分类 / 六个月趋势、共享汇率设置、转账汇率预填与手动覆盖、总收支折算模型与全币种选择、明细 / 图表默认折合 CNY 总收支与独立原币切换、年报（粒度切换 / 12 月趋势）、明细页自定义日期范围、图片 OCR 辅助录入、仅 CNY 的双人 AA 与加密文件交换。完整功能 / 限制见 [项目概览](README.md)。
 
-尚未交付：年报 / 自定义范围 / 收入独立报表 / 统计明细 / 日历（R-02～08）、AA 完整分类路径兼容、无障碍与后台自动入账。预算、CSV、整库备份、回收站仍为占位。现有图片 OCR 和独立测试 App 不代表无障碍已实现；真机、真实支付平台版本、iOS、正式签名发布也未验收。
+尚未交付：收入独立报表 / 统计明细 / 日历（R-04～08）、AA 完整分类路径兼容、无障碍与后台自动入账。预算、CSV、整库备份、回收站仍为占位。现有图片 OCR 和独立测试 App 不代表无障碍已实现；真机、真实支付平台版本、iOS、正式签名发布也未验收。
 
 ## 接手时先执行
 
 1. 读取本仓库适用的 `AGENTS.md` 等指令（如果存在），检查 `git status --short`、当前分支、`git log -5 --oneline`、`git remote -v`。保存并理解已有修改，不使用强制 reset、清空工作区、强推或丢弃不属于自己的改动。
 2. 按顺序阅读 [项目概览](README.md) → [开发进度](开发进度.md) → [总 TODO](TODO-无障碍自动记账.md) → [测试说明](测试说明.md) → 对应专项计划。当前下一步另读 [多币种与报表计划](下一版本计划-多币种与报表.md) 与 [汇率服务](汇率服务.md)。档案和 [早期设计框架](AA记账-功能设计框架.md) 只作历史参考。
 3. 确认正在修改哪一份 checkout，SDK / 缓存脚本是否指向它，ADB 对应哪两台原实例。不要因为存在 D 盘主目录而切到另一份代码，也不要重建模拟器或清除应用数据。
-4. 选一个 TODO ID，说明本轮范围、受影响数据和正反例。当前应选 R-03；本轮无需同时实施 R-04 或重做 R-02。
+4. 选一个 TODO ID，说明本轮范围、受影响数据和正反例。当前应选 R-04；本轮无需同时实施 R-05 或重做 R-03。
 
 ## 任务顺序与下一小点
 
-按 **R-02 → R-03 → R-04 → R-05 → R-06 → R-07 → R-08** 逐点交付，保留原编号，不按编号大小改顺序。随后再恢复 P1-05、P0-01 剩余能力探测、P2～P7。全部细项与验收要求保留在总 TODO，不另造一份状态清单。
+按 **R-04 → R-05 → R-06 → R-07 → R-08** 逐点交付，保留原编号，不按编号大小改顺序。随后再恢复 P1-05、P0-01 剩余能力探测、P2～P7。全部细项与验收要求保留在总 TODO，不另造一份状态清单。
 
 **C-13 的实现结果（已完成）：**
 
@@ -70,10 +70,15 @@ C-13 改动的关键路径：编辑页 `_pickTransferIncoming` / `_TransferIncom
 - converted 与 original 两分支同口径：converted 全年选集一次折算，12 个月分区复用同一逐笔值（分区之和守恒全年总额）；original 按月精确铺满全年区间。月模式行为与数值不变。
 - 专项入口 [year_report_test.dart](../app/test/pages/year_report_test.dart)；设备验收通过（年总额与设备库核实一致，含闰年 2/29 计入与次年 1/1 排除；5554 指纹因用户本人操作数据偏离基线，已保留不清理）。
 
-**R-03 的实现目标与边界（当前任务）：**
+**R-03 的实现结果（已完成）：**
 
-- 自定义日期范围：首末日包含，取消保留选择，结束早于开始拒绝；以起日零点到结束日次日零点为左闭右开区间。
-- 专项覆盖次日零点和跨年；双雷电选范围核对明细。
+- 明细页自定义日期范围：`ReportDateRange`（[report_filter.dart](../app/lib/utils/report_filter.dart)）把界面首末日转成起日零点到结束日次日零点的左闭右开区间，结束早于开始抛错拒绝；`showBillsRangePicker` + `RangeBar`（[range_bar.dart](../app/lib/widgets/range_bar.dart)）提供选择、平移与退出回按月，取消保留选择。
+- `billsPeriodModeProvider` / `selectedRangeProvider` / `billsPeriodProvider` / `billsPageBillsProvider` 只影响明细页；`monthBillsProvider` 保持月口径，图表页不受影响（组合筛选属 R-06）。顺带修复折算日小计跨月同日误合并（原按「日」字段匹配）。
+- 专项入口 [report_date_range_test.dart](../app/test/utils/report_date_range_test.dart) 与 [bills_range_test.dart](../app/test/pages/bills_range_test.dart)；双雷电跨年范围（2025-12-30 ~ 2026-01-02）明细 / 摘要 / 日小计与设备库一致，取消保留与退出回按月通过，QA 数据精确清理后指纹一致。
+
+**R-04 的实现目标与边界（当前任务）：**
+
+- 收入 / 支出切换，共用饼图、排行、金额、占比和趋势模型；日期 / 币种一致，验证收入分类及空态。
 
 ## 关键源码与不可破坏的规则
 
@@ -83,7 +88,7 @@ C-13 改动的关键路径：编辑页 `_pickTransferIncoming` / `_TransferIncom
 | 共享汇率 | [exchange](../app/lib/exchange)、[转账预填入口](../app/lib/exchange/transfer_rate_prefill.dart)、[折算模型](../app/lib/utils/report_conversion.dart)、[口径行](../app/lib/widgets/report_view_hint.dart)、[设置页面](../app/lib/pages/exchange_rates_page.dart)、[providers](../app/lib/providers.dart)：设置页、转账预填与明细 / 图表默认总收支已消费 |
 | 数据与事务 | [数据库](../app/lib/data/app_database.dart)：六表 `bills`、`accounts`、`categories`、`aa_groups`、`settlements`、`meta_entries`；迁移、关联与失败回滚不可绕过 |
 | 金额 / 余额 / 费用 | [utils](../app/lib/utils)：整数最小单位、BigInt 聚合；双额余额与唯一关联手续费 |
-| 明细 / 图表 | [bills_page.dart](../app/lib/pages/bills_page.dart)、[stats_page.dart](../app/lib/pages/stats_page.dart)、[报表聚合](../app/lib/utils/report.dart)、[底部详情](../app/lib/pages/bill_detail_page.dart) |
+| 明细 / 图表 | [bills_page.dart](../app/lib/pages/bills_page.dart)、[stats_page.dart](../app/lib/pages/stats_page.dart)、[报表聚合](../app/lib/utils/report.dart)、[底部详情](../app/lib/pages/bill_detail_page.dart)、[自定义范围条](../app/lib/widgets/range_bar.dart) |
 | 分类 | [层级工具](../app/lib/data/category_hierarchy.dart)、[管理页面](../app/lib/pages/categories_page.dart)：最多两级、同类型；迁移 / 删除转移保持引用与受保护关联 |
 | AA / OCR | [AA 服务](../app/lib/sync/aa_sync_service.dart)、[图片识别](../app/lib/recognition/bill_ocr.dart)：既有 AA 限 CNY；OCR 只回填待保存表单 |
 
