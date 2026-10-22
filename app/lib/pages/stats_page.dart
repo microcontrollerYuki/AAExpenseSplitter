@@ -16,6 +16,7 @@ import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
 import '../widgets/report_view_hint.dart';
 import '../widgets/year_bar.dart';
+import 'category_bills_sheet.dart';
 
 /// 图表页：本月分类支出饼图 + 近 6 个月收支趋势。
 /// 默认折合 CNY（R-09 折算模型，饼图与趋势共用同一冻结快照）；可切到
@@ -262,6 +263,11 @@ class StatsPage extends ConsumerWidget {
                 '${isYear ? '本年' : '本月'}暂无${isIncome ? '收入' : '支出'}',
             periodLabel: isYear ? '本年' : '本月',
             isIncome: isIncome,
+            onOpenBills: (category, label) => showCategoryBillsSheet(
+              context,
+              category: category,
+              title: label,
+            ),
           ),
           const SizedBox(height: 12),
           _TrendCard(
@@ -439,6 +445,7 @@ class _CategoryPieCard extends StatefulWidget {
     required this.emptyTitle,
     required this.periodLabel,
     required this.isIncome,
+    required this.onOpenBills,
   });
 
   final CategoryStats stats;
@@ -447,6 +454,7 @@ class _CategoryPieCard extends StatefulWidget {
   final String emptyTitle;
   final String periodLabel;
   final bool isIncome;
+  final void Function(ReportCategoryFilter category, String label) onOpenBills;
 
   @override
   State<_CategoryPieCard> createState() => _CategoryPieCardState();
@@ -459,6 +467,17 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
   void didUpdateWidget(covariant _CategoryPieCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.stats != widget.stats) _touchedIndex = null;
+  }
+
+  // 点击图项打开明细窗口：一级组含直属与二级（root），未分类组为 uncategorized。
+  void openGroup(int index) {
+    final group = widget.stats.groups[index];
+    final category = group.category == null
+        ? const ReportCategoryFilter.uncategorized()
+        : ReportCategoryFilter.root(group.category!.id);
+    final label =
+        '${group.category?.emoji ?? '📦'} ${group.category?.name ?? '未分类'}';
+    widget.onOpenBills(category, label);
   }
 
   @override
@@ -529,6 +548,9 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
                               if (_touchedIndex != index) {
                                 setState(() => _touchedIndex = index);
                               }
+                              if (event is FlTapUpEvent) {
+                                openGroup(index);
+                              }
                             },
                           ),
                           sections: [
@@ -556,7 +578,7 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
                       textAlign: TextAlign.center,
                     ),
                   const Text(
-                    '按一级分类汇总，点开查看二级',
+                    '按一级分类汇总，点行或扇区查看账单明细',
                     style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                   const SizedBox(height: 4),
@@ -568,6 +590,7 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
                       currency: currency,
                       color: kPiePalette[i % kPiePalette.length],
                       periodLabel: widget.periodLabel,
+                      onOpenBills: widget.onOpenBills,
                     ),
                 ],
               ),
@@ -586,6 +609,7 @@ class _CategoryGroupRow extends StatelessWidget {
     required this.currency,
     required this.color,
     required this.periodLabel,
+    required this.onOpenBills,
   });
 
   final CategoryStatGroup group;
@@ -593,6 +617,16 @@ class _CategoryGroupRow extends StatelessWidget {
   final String currency;
   final Color color;
   final String periodLabel;
+  final void Function(ReportCategoryFilter category, String label) onOpenBills;
+
+  void _open() {
+    final category = group.category == null
+        ? const ReportCategoryFilter.uncategorized()
+        : ReportCategoryFilter.root(group.category!.id);
+    final label =
+        '${group.category?.emoji ?? '📦'} ${group.category?.name ?? '未分类'}';
+    onOpenBills(category, label);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -619,6 +653,7 @@ class _CategoryGroupRow extends StatelessWidget {
         leading: dot,
         title: title,
         subtitle: subtitle,
+        onTap: _open,
       );
     }
     return ExpansionTile(
@@ -646,6 +681,10 @@ class _CategoryGroupRow extends StatelessWidget {
             amount: group.directAmount,
             currency: currency,
             percent: _percent(group.directAmount, group.amount),
+            onTap: () => onOpenBills(
+              ReportCategoryFilter.direct(group.category!.id),
+              '$label · 未细分',
+            ),
           ),
         for (final child in group.children)
           _LegendRow(
@@ -654,6 +693,10 @@ class _CategoryGroupRow extends StatelessWidget {
             amount: child.amount,
             currency: currency,
             percent: _percent(child.amount, group.amount),
+            onTap: () => onOpenBills(
+              ReportCategoryFilter.exact(child.category.id),
+              '${child.category.emoji} ${child.category.name}',
+            ),
           ),
       ],
     );
@@ -667,6 +710,7 @@ class _LegendRow extends StatelessWidget {
     required this.amount,
     required this.currency,
     required this.percent,
+    this.onTap,
   });
 
   final Color color;
@@ -674,37 +718,42 @@ class _LegendRow extends StatelessWidget {
   final BigInt amount;
   final String currency;
   final String percent;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13),
-                ),
-                Text(
-                  '${displayCurrencyAmount(amount, currency, prefix: false)} · $percent%',
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-              ],
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
             ),
-          ),
-        ],
+            const SizedBox(width: 6),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                  Text(
+                    '${displayCurrencyAmount(amount, currency, prefix: false)} · $percent%',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, size: 18, color: Colors.grey),
+          ],
+        ),
       ),
     );
   }

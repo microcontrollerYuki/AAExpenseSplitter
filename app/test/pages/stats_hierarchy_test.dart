@@ -99,7 +99,15 @@ void main() {
     await settleProviders(tester);
     expect(find.text('分项金额 · 占本分类'), findsNothing);
     expect(find.text('未细分'), findsNothing);
-    expect(find.text('¥ 12.00'), findsOneWidget);
+    // R-05：点击无二级的分类行打开明细窗口，合计与图项一致
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('category-bills-total')))
+          .data,
+      '合计 ¥ 12.00',
+    );
+    await tester.tap(find.byKey(const ValueKey('category-bills-close')));
+    await settleProviders(tester);
     expect(tester.takeException(), isNull);
     await disposePage(tester, db);
   });

@@ -311,6 +311,15 @@ void main() {
           .data,
       '餐饮 · $exact',
     );
+    // R-05：扇区点击同时打开明细窗口（未分类口径），核对合计后关闭继续版式断言
+    expect(
+      tester
+          .widget<Text>(find.byKey(const ValueKey('category-bills-total')))
+          .data,
+      '合计 $exact',
+    );
+    await tester.tap(find.byKey(const ValueKey('category-bills-close')));
+    await settleProviders(tester);
     final rect = tester.getRect(
       find.byKey(const ValueKey('stats-expense-total')),
     );
