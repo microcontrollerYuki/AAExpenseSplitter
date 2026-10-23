@@ -22,11 +22,21 @@ Future<DateTimeRange?> pickDateRange(
       end: DateTime(anchor.year, anchor.month + 1, 0),
     );
   }
+  final first = DateTime(2000);
+  final last = DateTime(2100, 12, 31);
+  DateTime bounded(DateTime date) =>
+      date.isBefore(first) ? first : (date.isAfter(last) ? last : date);
+  // Month selection and range shifting can exceed the picker's supported
+  // years. Clamp only the picker draft; cancellation preserves stored state.
+  final draft = DateTimeRange(
+    start: bounded(initial.start),
+    end: bounded(initial.end),
+  );
   return showDateRangePicker(
     context: context,
-    initialDateRange: initial,
-    firstDate: DateTime(2000),
-    lastDate: DateTime(2100, 12, 31),
+    initialDateRange: draft,
+    firstDate: first,
+    lastDate: last,
     helpText: '选择自定义日期范围',
     confirmText: '确定',
     saveText: '确定',
@@ -36,7 +46,7 @@ Future<DateTimeRange?> pickDateRange(
 /// 明细页入口：确认后写入共享范围并切换明细页到范围模式。
 Future<void> showBillsRangePicker(BuildContext context, WidgetRef ref) async {
   final picked = await pickDateRange(context, ref);
-  if (picked == null) return; // 取消保留选择
+  if (picked == null || !context.mounted) return; // 取消或关闭保留选择
   ref
       .read(selectedRangeProvider.notifier)
       .select(ReportDateRange(start: picked.start, end: picked.end));
@@ -47,9 +57,12 @@ Future<void> showBillsRangePicker(BuildContext context, WidgetRef ref) async {
 /// ‹ 起日 ~ 止日 ›，点击重新选择，‹ › 按范围天数平移；右侧按钮退出——
 /// 默认回明细页按月，传入 [onExit] 时由调用方决定退出行为。
 class RangeBar extends ConsumerWidget {
-  const RangeBar({super.key, this.onExit});
+  const RangeBar({super.key, this.onExit, this.onRangeSelected});
 
   final VoidCallback? onExit;
+
+  /// 图表页只更新共享范围，不切换明细页的周期模式。
+  final ValueChanged<ReportDateRange>? onRangeSelected;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -68,7 +81,17 @@ class RangeBar extends ConsumerWidget {
         Flexible(
           child: TextButton(
             key: const ValueKey('range-bar-select'),
-            onPressed: () => showBillsRangePicker(context, ref),
+            onPressed: () async {
+              if (onRangeSelected == null) {
+                await showBillsRangePicker(context, ref);
+                return;
+              }
+              final picked = await pickDateRange(context, ref);
+              if (picked == null || !context.mounted) return;
+              onRangeSelected!(
+                ReportDateRange(start: picked.start, end: picked.end),
+              );
+            },
             child: Tooltip(
               message: '修改自定义范围',
               child: FittedBox(
@@ -101,7 +124,8 @@ class RangeBar extends ConsumerWidget {
           key: const ValueKey('range-bar-exit'),
           tooltip: '退出自定义范围',
           icon: const Icon(Icons.close),
-          onPressed: onExit ??
+          onPressed:
+              onExit ??
               () => ref
                   .read(billsPeriodModeProvider.notifier)
                   .select(BillsPeriodMode.month),

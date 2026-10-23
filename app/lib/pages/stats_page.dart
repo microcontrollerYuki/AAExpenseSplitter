@@ -29,9 +29,13 @@ class StatsPage extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final m = ref.watch(selectedMonthProvider);
-    final granularity = ref.watch(statsGranularityProvider);
+    final requestedGranularity = ref.watch(statsGranularityProvider);
     final year = ref.watch(selectedYearProvider);
     final range = ref.watch(selectedRangeProvider);
+    final granularity =
+        requestedGranularity == StatsGranularity.range && range == null
+        ? StatsGranularity.month
+        : requestedGranularity;
     final view = ref.watch(statsViewProvider);
     final statsType = ref.watch(statsTypeProvider);
     final isIncome = statsType == 1;
@@ -40,6 +44,8 @@ class StatsPage extends ConsumerWidget {
     Widget titleBar() => switch (granularity) {
       StatsGranularity.year => const YearBar(),
       StatsGranularity.range => RangeBar(
+        onRangeSelected: (selected) =>
+            ref.read(selectedRangeProvider.notifier).select(selected),
         onExit: () => ref
             .read(statsGranularityProvider.notifier)
             .select(StatsGranularity.month),
@@ -197,10 +203,7 @@ class StatsPage extends ConsumerWidget {
       } else if (isRange && range != null) {
         trendParts = [
           for (final (y, mo) in _monthSpan(range))
-            (
-              _clipPeriodToMonth(range.period, y, mo),
-              mo,
-            ),
+            (_clipPeriodToMonth(range.period, y, mo), mo),
         ];
       } else {
         trendParts = [
@@ -213,16 +216,20 @@ class StatsPage extends ConsumerWidget {
       }
       trend = <_MonthSum>[
         for (final (part, month) in trendParts)
-          _monthSumOriginalPeriod(part, month, allBills, categories, view.code!),
+          _monthSumOriginalPeriod(
+            part,
+            month,
+            allBills,
+            categories,
+            view.code!,
+          ),
       ];
     }
 
     return Scaffold(
       appBar: AppBar(title: titleBar(), centerTitle: true),
       body: ListView(
-        key: ValueKey(
-          'stats-$periodKey-${view.code ?? 'converted'}',
-        ),
+        key: ValueKey('stats-$periodKey-${view.code ?? 'converted'}'),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),
         children: [
           SegmentedButton<StatsGranularity>(
@@ -261,10 +268,12 @@ class StatsPage extends ConsumerWidget {
               // 首次进入：先选范围，取消则保持原粒度
               unawaited(() async {
                 final picked = await pickDateRange(context, ref);
-                if (picked == null) return;
-                ref.read(selectedRangeProvider.notifier).select(
-                  ReportDateRange(start: picked.start, end: picked.end),
-                );
+                if (picked == null || !context.mounted) return;
+                ref
+                    .read(selectedRangeProvider.notifier)
+                    .select(
+                      ReportDateRange(start: picked.start, end: picked.end),
+                    );
                 ref
                     .read(statsGranularityProvider.notifier)
                     .select(StatsGranularity.range);
@@ -292,9 +301,8 @@ class StatsPage extends ConsumerWidget {
               ),
             ],
             selected: {statsType},
-            onSelectionChanged: (selection) => ref
-                .read(statsTypeProvider.notifier)
-                .select(selection.first),
+            onSelectionChanged: (selection) =>
+                ref.read(statsTypeProvider.notifier).select(selection.first),
           ),
           if (view.isConverted)
             ReportViewHint(quotes: frozen!, excluded: excluded),
@@ -344,9 +352,7 @@ class StatsPage extends ConsumerWidget {
     final selection = filterReportBills(
       bills: allBills,
       categories: categories,
-      filter: ReportFilter.allCurrencies(
-        period: ReportPeriod.month(month),
-      ),
+      filter: ReportFilter.allCurrencies(period: ReportPeriod.month(month)),
     );
     final converted = CnyConvertedBills.convert(
       bills: selection,
@@ -368,12 +374,10 @@ class StatsPage extends ConsumerWidget {
     List<Bill> convertedBills,
     CnyConvertedBills converted,
   ) {
-    final inMonth = convertedBills
-        .where((bill) {
-          final d = DateTime.fromMillisecondsSinceEpoch(bill.dateMs);
-          return d.year == year && d.month == month;
-        })
-        .toList();
+    final inMonth = convertedBills.where((bill) {
+      final d = DateTime.fromMillisecondsSinceEpoch(bill.dateMs);
+      return d.year == year && d.month == month;
+    }).toList();
     return _MonthSum(
       month: month,
       expense: converted.sumFor(inMonth.where((b) => b.type == 0).toList()),
@@ -582,12 +586,17 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
               children: [
                 Text(
                   widget.title,
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 Text(
                   displayCurrencyAmount(stats.total, currency),
                   key: ValueKey(
-                    widget.isIncome ? 'stats-income-total' : 'stats-expense-total',
+                    widget.isIncome
+                        ? 'stats-income-total'
+                        : 'stats-expense-total',
                   ),
                   style: TextStyle(
                     fontSize: 17,
@@ -602,7 +611,10 @@ class _CategoryPieCardState extends State<_CategoryPieCard> {
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 28),
                 child: Center(
-                  child: Text(widget.emptyTitle, style: const TextStyle(color: Colors.grey)),
+                  child: Text(
+                    widget.emptyTitle,
+                    style: const TextStyle(color: Colors.grey),
+                  ),
                 ),
               )
             else
@@ -874,7 +886,10 @@ class _TrendCard extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 _dot(kExpenseColor, '支出'),
                 _dot(kIncomeColor, '收入'),
