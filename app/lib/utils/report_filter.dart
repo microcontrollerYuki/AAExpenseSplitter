@@ -81,6 +81,18 @@ class ReportDateRange {
   int get hashCode => Object.hash(firstDay, lastDay);
 }
 
+/// 展示用范围标签：同年省略结束年份，跨年两侧都带年份。
+String reportDateRangeLabel(ReportDateRange range) {
+  final first = range.firstDay;
+  final last = range.lastDay;
+  if (first.year == last.year) {
+    return '${first.year}年${first.month}月${first.day}日'
+        ' ~ ${last.month}月${last.day}日';
+  }
+  return '${first.year}年${first.month}月${first.day}日'
+      ' ~ ${last.year}年${last.month}月${last.day}日';
+}
+
 enum ReportCategoryMode { all, root, direct, exact, uncategorized, exactIds }
 
 /// A missing requested category matches nothing. Unassigned/missing historical

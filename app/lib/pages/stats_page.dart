@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:fl_chart/fl_chart.dart';
@@ -14,6 +15,7 @@ import '../utils/report.dart';
 import '../utils/report_conversion.dart';
 import '../widgets/currency_filter.dart';
 import '../widgets/month_bar.dart';
+import '../widgets/range_bar.dart';
 import '../widgets/report_view_hint.dart';
 import '../widgets/year_bar.dart';
 import 'category_bills_sheet.dart';
@@ -29,12 +31,21 @@ class StatsPage extends ConsumerWidget {
     final m = ref.watch(selectedMonthProvider);
     final granularity = ref.watch(statsGranularityProvider);
     final year = ref.watch(selectedYearProvider);
+    final range = ref.watch(selectedRangeProvider);
     final view = ref.watch(statsViewProvider);
     final statsType = ref.watch(statsTypeProvider);
     final isIncome = statsType == 1;
     final isYear = granularity == StatsGranularity.year;
-    Widget titleBar() =>
-        isYear ? const YearBar() : const MonthBar();
+    final isRange = granularity == StatsGranularity.range;
+    Widget titleBar() => switch (granularity) {
+      StatsGranularity.year => const YearBar(),
+      StatsGranularity.range => RangeBar(
+        onExit: () => ref
+            .read(statsGranularityProvider.notifier)
+            .select(StatsGranularity.month),
+      ),
+      _ => const MonthBar(),
+    };
     final rateService = ref.watch(exchangeRateReadyProvider);
     ref.watch(exchangeRateVersionProvider);
     final monthBillsAsync = ref.watch(monthBillsProvider);
@@ -89,9 +100,24 @@ class StatsPage extends ConsumerWidget {
     }
     final categories = categoriesAsync.value ?? const <Category>[];
     final displayCode = view.isConverted ? 'CNY' : view.code!;
-    final period = isYear
-        ? ReportPeriod.year(year)
-        : ReportPeriod.month(m);
+    final statsPeriod = statsPeriodOf(
+      granularity: granularity,
+      month: m,
+      year: year,
+      range: range,
+    );
+    final period = statsPeriod.period;
+    // 周期前缀与占比标签：本月 / 本年 / 范围内
+    final periodPrefix = switch (granularity) {
+      StatsGranularity.year => '本年',
+      StatsGranularity.range => '范围内',
+      _ => '本月',
+    };
+    final periodKey = switch (granularity) {
+      StatsGranularity.year => 'y$year',
+      StatsGranularity.range => 'r${period.startMs}-${period.endMs}',
+      _ => '${m.year}-${m.month}',
+    };
 
     final List<_MonthSum> trend;
     CategoryStats? pieStats;
@@ -100,7 +126,7 @@ class StatsPage extends ConsumerWidget {
     BigInt income = BigInt.zero;
     BigInt expense = BigInt.zero;
     if (view.isConverted) {
-      // 一次同步冻结：本月饼图与 6 个月趋势共用同一汇率快照。
+      // 一次同步冻结：本月饼图与趋势共用同一汇率快照。
       frozen = FrozenCnyQuotes.capture(rateService.quote);
       final monthSelection = filterReportBills(
         bills: allBills,
@@ -128,16 +154,15 @@ class StatsPage extends ConsumerWidget {
       expense = monthConverted.sumFor(
         convertedBills.where((b) => b.type == 0).toList(),
       );
-      if (isYear) {
-        // 年粒度趋势：12 个月按账单月份分区复用同一逐笔折算值，
-        // 分区之和与全年总额守恒。
+      if (isYear || isRange) {
+        // 年 / 范围粒度趋势：按账单日历年月分区复用同一逐笔折算值，
+        // 分区之和与总额守恒。
+        final months = isYear
+            ? [for (var month = 1; month <= 12; month++) (year, month)]
+            : _monthSpan(range!);
         trend = <_MonthSum>[
-          for (var month = 1; month <= 12; month++)
-            _monthSumFromConverted(
-              month,
-              convertedBills,
-              monthConverted,
-            ),
+          for (final (y, mo) in months)
+            _monthSumFromConvertedIn(y, mo, convertedBills, monthConverted),
         ];
       } else {
         trend = <_MonthSum>[
@@ -150,24 +175,6 @@ class StatsPage extends ConsumerWidget {
             ),
         ];
       }
-    } else if (isYear) {
-      final yearReport = buildReport(
-        bills: allBills,
-        categories: categories,
-        filter: ReportFilter(period: period, currency: view.code!),
-      );
-      income = yearReport.income;
-      expense = yearReport.expense;
-      pieStats = isIncome ? yearReport.incomeStats : yearReport.expenseStats;
-      trend = <_MonthSum>[
-        for (var month = 1; month <= 12; month++)
-          _monthSumOriginal(
-            DateTime(year, month, 1),
-            allBills,
-            categories,
-            view.code!,
-          ),
-      ];
     } else {
       final report = buildReport(
         // Both the category chart and trend use one database snapshot, so a
@@ -176,15 +183,37 @@ class StatsPage extends ConsumerWidget {
         categories: categories,
         filter: ReportFilter(period: period, currency: view.code!),
       );
+      income = report.income;
+      expense = report.expense;
       pieStats = isIncome ? report.incomeStats : report.expenseStats;
+      // 趋势月分区：范围模式按范围边界裁剪首末月桶，
+      // 保证分区之和与报表总额守恒（年 / 月模式为整月桶）。
+      final List<(ReportPeriod, int)> trendParts;
+      if (isYear) {
+        trendParts = [
+          for (var month = 1; month <= 12; month++)
+            (ReportPeriod.month(DateTime(year, month, 1)), month),
+        ];
+      } else if (isRange && range != null) {
+        trendParts = [
+          for (final (y, mo) in _monthSpan(range))
+            (
+              _clipPeriodToMonth(range.period, y, mo),
+              mo,
+            ),
+        ];
+      } else {
+        trendParts = [
+          for (var i = 5; i >= 0; i--)
+            (
+              ReportPeriod.month(DateTime(m.year, m.month - i, 1)),
+              DateTime(m.year, m.month - i, 1).month,
+            ),
+        ];
+      }
       trend = <_MonthSum>[
-        for (var i = 5; i >= 0; i--)
-          _monthSumOriginal(
-            DateTime(m.year, m.month - i, 1),
-            allBills,
-            categories,
-            view.code!,
-          ),
+        for (final (part, month) in trendParts)
+          _monthSumOriginalPeriod(part, month, allBills, categories, view.code!),
       ];
     }
 
@@ -192,8 +221,7 @@ class StatsPage extends ConsumerWidget {
       appBar: AppBar(title: titleBar(), centerTitle: true),
       body: ListView(
         key: ValueKey(
-          'stats-${isYear ? 'y$year' : '${m.year}-${m.month}'}-'
-          '${view.code ?? 'converted'}',
+          'stats-$periodKey-${view.code ?? 'converted'}',
         ),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),
         children: [
@@ -210,11 +238,38 @@ class StatsPage extends ConsumerWidget {
                 label: Text('年'),
                 icon: Icon(Icons.event),
               ),
+              ButtonSegment(
+                value: StatsGranularity.range,
+                label: Text('范围'),
+                icon: Icon(Icons.date_range),
+              ),
             ],
             selected: {granularity},
-            onSelectionChanged: (selection) => ref
-                .read(statsGranularityProvider.notifier)
-                .select(selection.first),
+            onSelectionChanged: (selection) {
+              final next = selection.first;
+              if (next != StatsGranularity.range) {
+                ref.read(statsGranularityProvider.notifier).select(next);
+                return;
+              }
+              if (ref.read(selectedRangeProvider) != null) {
+                // 已有范围选择：直接进入范围粒度
+                ref
+                    .read(statsGranularityProvider.notifier)
+                    .select(StatsGranularity.range);
+                return;
+              }
+              // 首次进入：先选范围，取消则保持原粒度
+              unawaited(() async {
+                final picked = await pickDateRange(context, ref);
+                if (picked == null) return;
+                ref.read(selectedRangeProvider.notifier).select(
+                  ReportDateRange(start: picked.start, end: picked.end),
+                );
+                ref
+                    .read(statsGranularityProvider.notifier)
+                    .select(StatsGranularity.range);
+              }());
+            },
           ),
           const SizedBox(height: 4),
           CurrencyFilter(
@@ -243,7 +298,7 @@ class StatsPage extends ConsumerWidget {
           ),
           if (view.isConverted)
             ReportViewHint(quotes: frozen!, excluded: excluded),
-          if (isYear)
+          if (isYear || isRange)
             _YearSummaryRow(
               key: const ValueKey('year-summary'),
               income: income,
@@ -252,16 +307,12 @@ class StatsPage extends ConsumerWidget {
               converted: view.isConverted,
             ),
           _CategoryPieCard(
-            key: ValueKey(
-              '${isYear ? 'y$year' : '${m.year}-${m.month}'}-'
-              '${view.code ?? 'converted'}',
-            ),
+            key: ValueKey('$periodKey-${view.code ?? 'converted'}'),
             stats: pieStats,
             currency: displayCode,
-            title: '${isYear ? '本年' : '本月'}${isIncome ? '收入' : '支出'}',
-            emptyTitle:
-                '${isYear ? '本年' : '本月'}暂无${isIncome ? '收入' : '支出'}',
-            periodLabel: isYear ? '本年' : '本月',
+            title: '$periodPrefix${isIncome ? '收入' : '支出'}',
+            emptyTitle: '$periodPrefix暂无${isIncome ? '收入' : '支出'}',
+            periodLabel: periodPrefix,
             isIncome: isIncome,
             onOpenBills: (category, label) => showCategoryBillsSheet(
               context,
@@ -273,7 +324,11 @@ class StatsPage extends ConsumerWidget {
           _TrendCard(
             trend: trend,
             currency: displayCode,
-            title: isYear ? '$year年逐月收支趋势' : '近6个月收支趋势',
+            title: switch (granularity) {
+              StatsGranularity.year => '$year年逐月收支趋势',
+              StatsGranularity.range => '${statsPeriod.label}逐月收支趋势',
+              _ => '近6个月收支趋势',
+            },
           ),
         ],
       ),
@@ -305,17 +360,19 @@ class StatsPage extends ConsumerWidget {
     );
   }
 
-  /// 年粒度趋势分区：12 个月复用同一逐笔折算值（全年选集折算一次）。
-  _MonthSum _monthSumFromConverted(
+  /// 年 / 范围粒度趋势分区：各日历月复用同一逐笔折算值（选集折算一次）。
+  /// 按年 + 月双字段匹配，跨年范围不会合并不同年份的同名月份。
+  _MonthSum _monthSumFromConvertedIn(
+    int year,
     int month,
     List<Bill> convertedBills,
     CnyConvertedBills converted,
   ) {
     final inMonth = convertedBills
-        .where(
-          (bill) =>
-              DateTime.fromMillisecondsSinceEpoch(bill.dateMs).month == month,
-        )
+        .where((bill) {
+          final d = DateTime.fromMillisecondsSinceEpoch(bill.dateMs);
+          return d.year == year && d.month == month;
+        })
         .toList();
     return _MonthSum(
       month: month,
@@ -324,8 +381,18 @@ class StatsPage extends ConsumerWidget {
     );
   }
 
-  _MonthSum _monthSumOriginal(
-    DateTime month,
+  /// 范围模式的月分区：把范围区间裁剪到指定日历月内（首末月为部分月）。
+  ReportPeriod _clipPeriodToMonth(ReportPeriod period, int year, int month) {
+    final monthStart = DateTime(year, month, 1).millisecondsSinceEpoch;
+    final monthEnd = DateTime(year, month + 1, 1).millisecondsSinceEpoch;
+    final start = period.startMs > monthStart ? period.startMs : monthStart;
+    final end = period.endMs < monthEnd ? period.endMs : monthEnd;
+    return ReportPeriod(startMs: start, endMs: end);
+  }
+
+  _MonthSum _monthSumOriginalPeriod(
+    ReportPeriod part,
+    int month,
     List<Bill> allBills,
     List<Category> categories,
     String currency,
@@ -333,13 +400,10 @@ class StatsPage extends ConsumerWidget {
     final summary = buildReport(
       bills: allBills,
       categories: categories,
-      filter: ReportFilter(
-        period: ReportPeriod.month(month),
-        currency: currency,
-      ),
+      filter: ReportFilter(period: part, currency: currency),
     );
     return _MonthSum(
-      month: month.month,
+      month: month,
       expense: summary.expense,
       income: summary.income,
     );
@@ -355,6 +419,23 @@ class _MonthSum {
     required this.expense,
     required this.income,
   });
+}
+
+/// 自定义范围覆盖的日历月序列（首月到末月，含跨年）。
+List<(int, int)> _monthSpan(ReportDateRange range) {
+  final months = <(int, int)>[];
+  var y = range.firstDay.year;
+  var mo = range.firstDay.month;
+  while (y < range.lastDay.year ||
+      (y == range.lastDay.year && mo <= range.lastDay.month)) {
+    months.add((y, mo));
+    mo++;
+    if (mo > 12) {
+      mo = 1;
+      y++;
+    }
+  }
+  return months;
 }
 
 /// 年粒度收支结余摘要：总览带 ¥ 前缀，原币 CNY 沿用无前缀规则。

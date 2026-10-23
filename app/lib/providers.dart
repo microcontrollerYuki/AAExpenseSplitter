@@ -104,8 +104,9 @@ final statsViewProvider = NotifierProvider<StatsViewNotifier, ReportViewCurrency
   StatsViewNotifier.new,
 );
 
-/// 统计页粒度：月（默认，沿用 selectedMonthProvider）或年（selectedYearProvider）。
-enum StatsGranularity { month, year }
+/// 统计页粒度：月（默认，沿用 selectedMonthProvider）、年
+/// （selectedYearProvider）或自定义范围（selectedRangeProvider，R-06）。
+enum StatsGranularity { month, year, range }
 
 class StatsGranularityNotifier extends Notifier<StatsGranularity> {
   @override
@@ -186,6 +187,27 @@ final selectedRangeProvider =
     NotifierProvider<SelectedRangeNotifier, ReportDateRange?>(
       SelectedRangeNotifier.new,
     );
+
+/// 图表页当前周期与展示标签（R-06）：月 / 年 / 自定义范围三种粒度共用。
+/// 范围模式未选范围时按防御口径回退当月。
+({ReportPeriod period, String label}) statsPeriodOf({
+  required StatsGranularity granularity,
+  required DateTime month,
+  required int year,
+  required ReportDateRange? range,
+}) {
+  return switch (granularity) {
+    StatsGranularity.year => (period: ReportPeriod.year(year), label: '$year年'),
+    StatsGranularity.range when range != null => (
+      period: range.period,
+      label: reportDateRangeLabel(range),
+    ),
+    _ => (
+      period: ReportPeriod.month(month),
+      label: '${month.year}年${month.month}月',
+    ),
+  };
+}
 
 /// 明细页当前报表周期：范围模式且已选范围用自定义区间，否则沿用所选月份。
 final billsPeriodProvider = Provider<ReportPeriod>((ref) {

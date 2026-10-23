@@ -4,11 +4,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers.dart';
 import '../utils/report_filter.dart';
 
-/// 打开自定义日期范围选择器（明细页 AppBar 与范围条共用）。
-/// 取消不改动当前选择与模式；确认写入范围并切换到范围模式。
+/// 打开自定义日期范围选择器，返回确认的范围；取消返回 null，不改动任何状态。
 /// 边界与账单录入一致（2000～2100）；首末日都包含，内部由
 /// ReportDateRange 转为起日零点到结束日次日零点的左闭右开区间。
-Future<void> showBillsRangePicker(BuildContext context, WidgetRef ref) async {
+Future<DateTimeRange?> pickDateRange(
+  BuildContext context,
+  WidgetRef ref,
+) async {
   final current = ref.read(selectedRangeProvider);
   final anchor = ref.read(selectedMonthProvider);
   final DateTimeRange initial;
@@ -20,7 +22,7 @@ Future<void> showBillsRangePicker(BuildContext context, WidgetRef ref) async {
       end: DateTime(anchor.year, anchor.month + 1, 0),
     );
   }
-  final picked = await showDateRangePicker(
+  return showDateRangePicker(
     context: context,
     initialDateRange: initial,
     firstDate: DateTime(2000),
@@ -29,17 +31,25 @@ Future<void> showBillsRangePicker(BuildContext context, WidgetRef ref) async {
     confirmText: '确定',
     saveText: '确定',
   );
+}
+
+/// 明细页入口：确认后写入共享范围并切换明细页到范围模式。
+Future<void> showBillsRangePicker(BuildContext context, WidgetRef ref) async {
+  final picked = await pickDateRange(context, ref);
   if (picked == null) return; // 取消保留选择
-  ref.read(selectedRangeProvider.notifier).select(
-    ReportDateRange(start: picked.start, end: picked.end),
-  );
+  ref
+      .read(selectedRangeProvider.notifier)
+      .select(ReportDateRange(start: picked.start, end: picked.end));
   ref.read(billsPeriodModeProvider.notifier).select(BillsPeriodMode.range);
 }
 
-/// 自定义范围切换条（明细页范围模式）：‹ 起日 ~ 止日 ›，点击重新选择，
-/// ‹ › 按范围天数平移；右侧按钮退出回按月（保留范围选择）。
+/// 自定义范围切换条（明细页范围模式 / 图表页范围粒度共用）：
+/// ‹ 起日 ~ 止日 ›，点击重新选择，‹ › 按范围天数平移；右侧按钮退出——
+/// 默认回明细页按月，传入 [onExit] 时由调用方决定退出行为。
 class RangeBar extends ConsumerWidget {
-  const RangeBar({super.key});
+  const RangeBar({super.key, this.onExit});
+
+  final VoidCallback? onExit;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -67,7 +77,7 @@ class RangeBar extends ConsumerWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      _rangeLabel(range),
+                      reportDateRangeLabel(range),
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
@@ -91,22 +101,12 @@ class RangeBar extends ConsumerWidget {
           key: const ValueKey('range-bar-exit'),
           tooltip: '退出自定义范围',
           icon: const Icon(Icons.close),
-          onPressed: () => ref
-              .read(billsPeriodModeProvider.notifier)
-              .select(BillsPeriodMode.month),
+          onPressed: onExit ??
+              () => ref
+                  .read(billsPeriodModeProvider.notifier)
+                  .select(BillsPeriodMode.month),
         ),
       ],
     );
   }
-}
-
-String _rangeLabel(ReportDateRange range) {
-  final first = range.firstDay;
-  final last = range.lastDay;
-  if (first.year == last.year) {
-    return '${first.year}年${first.month}月${first.day}日'
-        ' ~ ${last.month}月${last.day}日';
-  }
-  return '${first.year}年${first.month}月${first.day}日'
-      ' ~ ${last.year}年${last.month}月${last.day}日';
 }

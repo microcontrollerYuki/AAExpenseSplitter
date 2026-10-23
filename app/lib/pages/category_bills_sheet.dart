@@ -61,6 +61,7 @@ class CategoryBillsSheet extends ConsumerWidget {
     final granularity = ref.watch(statsGranularityProvider);
     final month = ref.watch(selectedMonthProvider);
     final year = ref.watch(selectedYearProvider);
+    final range = ref.watch(selectedRangeProvider);
     final view = ref.watch(statsViewProvider);
     final statsType = ref.watch(statsTypeProvider);
     final rateService = ref.watch(exchangeRateReadyProvider);
@@ -70,13 +71,15 @@ class CategoryBillsSheet extends ConsumerWidget {
     final categoriesAsync = ref.watch(categoriesProvider);
 
     final isIncome = statsType == 1;
-    final isYear = granularity == StatsGranularity.year;
     final displayCode = view.isConverted ? 'CNY' : view.code!;
-    final periodLabel = isYear
-        ? '$year年'
-        : '${month.year}年${month.month}月';
+    final statsPeriod = statsPeriodOf(
+      granularity: granularity,
+      month: month,
+      year: year,
+      range: range,
+    );
     final condition =
-        '$periodLabel · ${isIncome ? '收入' : '支出'} · '
+        '${statsPeriod.label} · ${isIncome ? '收入' : '支出'} · '
         '${view.isConverted ? '总览 · 折合 CNY（估算值）' : '原币 ${view.code!}'}';
 
     if (categoriesAsync.isLoading || categoriesAsync.hasError) {
@@ -106,9 +109,7 @@ class CategoryBillsSheet extends ConsumerWidget {
 
     final categories = categoriesAsync.value ?? const <Category>[];
     final allBills = billsAsync.value ?? const <Bill>[];
-    final period = isYear
-        ? ReportPeriod.year(year)
-        : ReportPeriod.month(month);
+    final period = statsPeriod.period;
 
     // 与图表同一选集：周期 + 维度（converted 全币种，original 单币种），
     // 内部分类收入沿用筛选层排除。
