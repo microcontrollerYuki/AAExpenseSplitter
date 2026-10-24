@@ -5,13 +5,24 @@ import '../providers.dart';
 import '../utils/money.dart';
 import 'year_month_picker.dart';
 
-/// 月份切换条（明细页 / 图表页共用，状态存于 selectedMonthProvider）
+/// 月份切换条。默认沿用明细/图表月份；日历可传入独立状态。
 class MonthBar extends ConsumerWidget {
-  const MonthBar({super.key});
+  const MonthBar({super.key, this.month, this.onSelect});
+
+  final DateTime? month;
+  final ValueChanged<DateTime>? onSelect;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final m = ref.watch(selectedMonthProvider);
+    final DateTime m = month ?? ref.watch<DateTime>(selectedMonthProvider);
+    void select(DateTime value) {
+      if (onSelect case final callback?) {
+        callback(value);
+      } else {
+        ref.read(selectedMonthProvider.notifier).selectMonth(value);
+      }
+    }
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       mainAxisAlignment: MainAxisAlignment.center,
@@ -19,7 +30,7 @@ class MonthBar extends ConsumerWidget {
         IconButton(
           tooltip: '上一月',
           icon: const Icon(Icons.chevron_left),
-          onPressed: () => ref.read(selectedMonthProvider.notifier).shift(-1),
+          onPressed: () => select(DateTime(m.year, m.month - 1, 1)),
         ),
         Flexible(
           child: TextButton(
@@ -30,7 +41,7 @@ class MonthBar extends ConsumerWidget {
                 initialMonth: m,
               );
               if (!context.mounted || picked == null) return;
-              ref.read(selectedMonthProvider.notifier).selectMonth(picked);
+              select(picked);
             },
             child: Tooltip(
               message: '选择年月',
@@ -56,7 +67,7 @@ class MonthBar extends ConsumerWidget {
         IconButton(
           tooltip: '下一月',
           icon: const Icon(Icons.chevron_right),
-          onPressed: () => ref.read(selectedMonthProvider.notifier).shift(1),
+          onPressed: () => select(DateTime(m.year, m.month + 1, 1)),
         ),
       ],
     );

@@ -18,6 +18,7 @@ import '../widgets/month_bar.dart';
 import '../widgets/range_bar.dart';
 import '../widgets/report_view_hint.dart';
 import '../widgets/year_bar.dart';
+import 'calendar_stats_page.dart';
 import 'category_bills_sheet.dart';
 
 /// 图表页：本月分类支出饼图 + 近 6 个月收支趋势。
@@ -28,6 +29,16 @@ class StatsPage extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (ref.watch(statsCalendarModeProvider)) {
+      return const CalendarStatsPage();
+    }
+    Widget calendarAction() => IconButton(
+      key: const ValueKey('stats-mode-calendar'),
+      tooltip: '日历视图',
+      icon: const Icon(Icons.calendar_month),
+      onPressed: () =>
+          ref.read(statsCalendarModeProvider.notifier).select(true),
+    );
     final m = ref.watch(selectedMonthProvider);
     final requestedGranularity = ref.watch(statsGranularityProvider);
     final year = ref.watch(selectedYearProvider);
@@ -62,7 +73,11 @@ class StatsPage extends ConsumerWidget {
     // provisional income totals while that metadata is missing or failed.
     if (categoriesAsync.isLoading || categoriesAsync.hasError) {
       return Scaffold(
-        appBar: AppBar(title: titleBar(), centerTitle: true),
+        appBar: AppBar(
+          title: titleBar(),
+          centerTitle: true,
+          actions: [calendarAction()],
+        ),
         body: Column(
           children: [
             CurrencyFilter(
@@ -89,7 +104,11 @@ class StatsPage extends ConsumerWidget {
         allBillsAsync.hasError) {
       final failed = monthBillsAsync.hasError || allBillsAsync.hasError;
       return Scaffold(
-        appBar: AppBar(title: titleBar(), centerTitle: true),
+        appBar: AppBar(
+          title: titleBar(),
+          centerTitle: true,
+          actions: [calendarAction()],
+        ),
         body: Column(
           children: [
             CurrencyFilter(
@@ -227,7 +246,11 @@ class StatsPage extends ConsumerWidget {
     }
 
     return Scaffold(
-      appBar: AppBar(title: titleBar(), centerTitle: true),
+      appBar: AppBar(
+        title: titleBar(),
+        centerTitle: true,
+        actions: [calendarAction()],
+      ),
       body: ListView(
         key: ValueKey('stats-$periodKey-${view.code ?? 'converted'}'),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),

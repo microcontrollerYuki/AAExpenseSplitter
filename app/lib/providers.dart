@@ -6,6 +6,8 @@ import 'data/app_database.dart';
 import 'exchange/exchange_rate_service.dart';
 import 'exchange/transfer_rate_prefill.dart';
 import 'sync/aa_sync_service.dart';
+import 'utils/calendar_report.dart';
+import 'utils/report_conversion.dart';
 import 'utils/report_filter.dart';
 
 final databaseProvider = Provider<AppDatabase>((ref) {
@@ -60,6 +62,42 @@ final selectedMonthProvider = NotifierProvider<SelectedMonthNotifier, DateTime>(
   SelectedMonthNotifier.new,
 );
 
+/// 日历独立保留月份；切换图表不会改动首页明细的月份。
+final calendarMonthProvider = NotifierProvider<SelectedMonthNotifier, DateTime>(
+  SelectedMonthNotifier.new,
+);
+
+class StatsCalendarModeNotifier extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  void select(bool value) {
+    if (state != value) state = value;
+  }
+}
+
+final statsCalendarModeProvider =
+    NotifierProvider<StatsCalendarModeNotifier, bool>(
+      StatsCalendarModeNotifier.new,
+    );
+
+/// 每日明细筛选单独保留；关闭窗口或切回图表不覆盖其收支维度。
+class CalendarDayTypeNotifier extends Notifier<int> {
+  @override
+  int build() => -1;
+
+  void select(int type) {
+    if (type != -1 && type != 0 && type != 1) {
+      throw ArgumentError.value(type, 'type', 'Only all, expense or income');
+    }
+    if (state != type) state = type;
+  }
+}
+
+final calendarDayTypeProvider = NotifierProvider<CalendarDayTypeNotifier, int>(
+  CalendarDayTypeNotifier.new,
+);
+
 /// 统计视图：折合 CNY 总览（code 为 null，经 R-09 折算模型取值）或某一原币。
 /// 明细 / 图表两页各自持有独立状态，互不影响；切换不改动月份与分类筛选。
 class ReportViewCurrency {
@@ -96,13 +134,15 @@ class StatsViewNotifier extends Notifier<ReportViewCurrency> {
   }
 }
 
-final billsViewProvider = NotifierProvider<BillsViewNotifier, ReportViewCurrency>(
-  BillsViewNotifier.new,
-);
+final billsViewProvider =
+    NotifierProvider<BillsViewNotifier, ReportViewCurrency>(
+      BillsViewNotifier.new,
+    );
 
-final statsViewProvider = NotifierProvider<StatsViewNotifier, ReportViewCurrency>(
-  StatsViewNotifier.new,
-);
+final statsViewProvider =
+    NotifierProvider<StatsViewNotifier, ReportViewCurrency>(
+      StatsViewNotifier.new,
+    );
 
 /// 统计页粒度：月（默认，沿用 selectedMonthProvider）、年
 /// （selectedYearProvider）或自定义范围（selectedRangeProvider，R-06）。
@@ -136,8 +176,9 @@ class StatsTypeNotifier extends Notifier<int> {
   }
 }
 
-final statsTypeProvider =
-    NotifierProvider<StatsTypeNotifier, int>(StatsTypeNotifier.new);
+final statsTypeProvider = NotifierProvider<StatsTypeNotifier, int>(
+  StatsTypeNotifier.new,
+);
 
 /// 年报模式所选年份（默认当前年）；与 selectedMonthProvider 互不影响。
 class SelectedYearNotifier extends Notifier<int> {
@@ -151,8 +192,9 @@ class SelectedYearNotifier extends Notifier<int> {
   void shift(int delta) => selectYear(state + delta);
 }
 
-final selectedYearProvider =
-    NotifierProvider<SelectedYearNotifier, int>(SelectedYearNotifier.new);
+final selectedYearProvider = NotifierProvider<SelectedYearNotifier, int>(
+  SelectedYearNotifier.new,
+);
 
 /// 明细页周期模式：按月（沿用 selectedMonthProvider）或自定义日期范围
 /// （selectedRangeProvider）。图表页不受影响，报表组合筛选属 R-06。
@@ -261,6 +303,36 @@ final categoriesProvider = StreamProvider<List<Category>>(
 final allBillsProvider = StreamProvider<List<Bill>>(
   (ref) => ref.watch(databaseProvider).watchAllBills(),
 );
+
+/// 月历与每日明细共享一个不可变快照。账单、分类或报价变化时整体
+/// 重建；每日明细复用逐笔金额，不重新报价或折算。
+final calendarReportProvider = Provider<AsyncValue<CalendarReport>>((ref) {
+  final month = ref.watch(calendarMonthProvider);
+  final view = ref.watch(statsViewProvider);
+  final bills = ref.watch(allBillsProvider);
+  final categories = ref.watch(categoriesProvider);
+  final service = ref.watch(exchangeRateReadyProvider);
+  ref.watch(exchangeRateVersionProvider);
+  if (bills.hasError) return AsyncError(bills.error!, bills.stackTrace!);
+  if (categories.hasError) {
+    return AsyncError(categories.error!, categories.stackTrace!);
+  }
+  if (!bills.hasValue ||
+      !categories.hasValue ||
+      bills.isLoading ||
+      categories.isLoading) {
+    return const AsyncLoading();
+  }
+  return AsyncData(
+    buildCalendarReport(
+      month: month,
+      bills: bills.requireValue,
+      categories: categories.requireValue,
+      currency: view.code,
+      quotes: view.isConverted ? FrozenCnyQuotes.capture(service.quote) : null,
+    ),
+  );
+});
 
 /// Includes cancelled fees, so old edit/delete paths cannot detach history.
 final transferFeeProvider = StreamProvider.family<Bill?, String>(
